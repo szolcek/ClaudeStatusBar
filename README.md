@@ -172,6 +172,9 @@ optional, and the file is only read if it exists. Set `CTXLINE_CONFIG` to use a 
   // Only a size is stripped; any other parenthetical is left alone.
   "hideContextSize": false,
 
+  // Shed detail as the terminal narrows, instead of wrapping straight away.
+  "compact": false,
+
   "separator": " │ ",
 
   // Usage bar colors: green below the first, then yellow, orange, red.
@@ -187,6 +190,27 @@ falls back to its own default while the rest of the file still applies. An `orde
 containing only unknown names falls back to the full default rather than rendering a blank
 line, and control characters are rejected in labels and separators so a config file can't
 inject terminal escapes.
+
+**Compact mode.** With `"compact": true` the line sheds detail progressively as the
+terminal narrows, and only wraps once there's nothing left to shed:
+
+| Level | Drops |
+|---|---|
+| 0 | nothing — full detail |
+| 1 | the `↺ 2d13h` reset countdowns |
+| 2 | the context bar glyphs (the `C38` number stays) |
+| 3 | the effort suffix; model name truncated to 10 characters |
+
+```
+120 cols  Opus 5 · high │ C38 ██░░░░ │ S49 ↺ 1h59m │ W63 ↺ 2d13h │ F88 ↺ 2d13h
+ 44 cols  Opus 5 · high │ C38 ██░░░░ │ S49 │ W63 │ F88
+ 36 cols  Opus 5 │ C38 │ S49 │ W63 │ F88
+ 26 cols  Opus 5 │ C38
+          S49 │ W63 │ F88
+```
+
+Percentages are never dropped — they're the reason the bar exists. If the width isn't
+known (no `COLUMNS`), nothing is abbreviated, since there's nothing to measure against.
 
 Two things worth knowing: `wrapAfter` must name a segment that's present in `order`,
 otherwise there's nowhere to break and the line never wraps. And changes take effect on the

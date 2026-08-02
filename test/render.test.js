@@ -98,13 +98,14 @@ function fixture(remaining, dir = '/tmp/myproject', model = 'Opus 4.8', effort, 
 // stdin payload carrying `rate_limits` (Claude.ai Pro/Max, post-first-response).
 // resets_at is a Unix epoch in SECONDS. 5h ~2h out, 7d ~62h out (exercises day-aware countdown).
 // Claude Code pipes only five_hour and seven_day here — never a model-scoped limit.
-function fixtureWithRateLimits(remaining, { five = 23.5, seven = 41.2 } = {}) {
+function fixtureWithRateLimits(remaining, { five = 23.5, seven = 41.2, model = 'Opus 4.8', effort } = {}) {
   const nowSec = Math.floor(Date.now() / 1000);
   return JSON.stringify({
-    model: { display_name: 'Opus 4.8' },
+    model: { display_name: model },
     workspace: { current_dir: '/tmp/myproject' },
     session_id: 'test-session',
     context_window: { remaining_percentage: remaining },
+    ...(effort ? { effort: { level: effort } } : {}),
     rate_limits: {
       five_hour: { used_percentage: five, resets_at: nowSec + 2 * 3600 },
       seven_day: { used_percentage: seven, resets_at: nowSec + 62 * 3600 }
@@ -822,6 +823,83 @@ test('hideContextSize only strips a size, not any parenthetical', () => {
     'Opus 5',
     'a name with no parenthetical is untouched'
   );
+});
+
+// `compact`: shed detail progressively as the terminal narrows, wrapping only once
+// there's nothing left to shed. Levels: 0 full, 1 no countdowns, 2 no context glyphs,
+// 3 no effort + truncated model name.
+
+test('compact off (default): full detail at any width, wrap as the only response', () => {
+  const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), { usage: true, columns: 30 });
+  assert.match(clean, /↺/, 'countdowns kept');
+  assert.match(clean, /█|░/, 'context glyphs kept');
+  assert.ok(clean.includes('\n'), 'narrow width wraps instead of abbreviating');
+});
+
+test('compact: wide terminal keeps full detail', () => {
+  const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), {
+    usage: true, config: { compact: true }, columns: 200
+  });
+  assert.match(clean, /H24 ↺ /, 'countdown kept when there is room');
+  assert.match(clean, /█|░/, 'context glyphs kept');
+  assert.ok(!clean.includes('\n'), 'single line');
+});
+
+test('compact level 1: countdowns go first', () => {
+  const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), {
+    usage: true, config: { compact: true }, columns: 55
+  });
+  assert.ok(!clean.includes('↺'), 'countdowns dropped');
+  assert.match(clean, /H24\b/, 'percentages kept');
+  assert.match(clean, /W41\b/);
+  assert.match(clean, /█|░/, 'context glyphs still present at this width');
+  assert.ok(!clean.includes('\n'), 'still one line');
+});
+
+test('compact level 2: context bar glyphs go next, the number stays', () => {
+  const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), {
+    usage: true, config: { compact: true }, columns: 42
+  });
+  assert.ok(!/[█░]/.test(clean), 'bar glyphs dropped');
+  assert.match(clean, /C60\b/, 'context percentage kept');
+  assert.match(clean, /H24\b/);
+  assert.ok(!clean.includes('\n'), 'still one line');
+});
+
+test('compact level 3: effort suffix drops and a long model name truncates', () => {
+  const { clean } = run(
+    fixtureWithRateLimits(40, { effort: 'high', model: 'Some Very Long Model' }),
+    { usage: true, config: { compact: true }, columns: 34 }
+  );
+  assert.ok(!clean.includes('high'), 'effort suffix dropped');
+  assert.match(clean, /Some Very…/, 'model truncated to 10 cells with an ellipsis');
+  assert.match(clean, /C60\b/, 'percentages survive to the last level');
+  assert.match(clean, /H24\b/);
+});
+
+test('compact: a short model name is never truncated', () => {
+  const { clean } = run(fixtureWithRateLimits(40, { model: 'Opus 5' }), {
+    usage: true, config: { compact: true }, columns: 30
+  });
+  assert.ok(!clean.includes('…'), 'nothing to truncate at 6 characters');
+  assert.match(clean, /Opus 5/);
+});
+
+test('compact: wrapping is the last resort, after all detail is shed', () => {
+  const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), {
+    usage: true, config: { compact: true }, columns: 20
+  });
+  assert.ok(clean.includes('\n'), 'wraps once even level 3 does not fit');
+  assert.ok(!clean.includes('↺'), 'and it wraps in the abbreviated form, not the full one');
+  assert.ok(!/[█░]/.test(clean));
+});
+
+test('compact: unknown width keeps full detail (nothing to measure against)', () => {
+  const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), {
+    usage: true, config: { compact: true }   // no columns -> COLUMNS unset
+  });
+  assert.match(clean, /↺/, 'no measurement possible -> do not abbreviate');
+  assert.match(clean, /█|░/);
 });
 
 test('separator is configurable', () => {

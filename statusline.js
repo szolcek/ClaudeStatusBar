@@ -40,6 +40,7 @@ const DEFAULT_CONFIG = {
   order: SEGMENT_NAMES.slice(),
   wrapAfter: 'context',            // line breaks after this segment when too wide; null = never
   hideContextSize: false,          // true -> "Opus 5 (1M)" renders as "Opus 5"
+  compact: false,                  // true -> abbreviate progressively before wrapping
   separator: ' │ ',
   thresholds: [50, 75, 90]         // usage colors: green <50, yellow <75, orange <90, else red
 };
@@ -101,6 +102,7 @@ function loadConfig() {
   if (!cfg.order.includes(cfg.wrapAfter)) cfg.wrapAfter = null;
 
   if (typeof raw.hideContextSize === 'boolean') cfg.hideContextSize = raw.hideContextSize;
+  if (typeof raw.compact === 'boolean') cfg.compact = raw.compact;
 
   if (typeof raw.separator === 'string' && raw.separator.length > 0 && !/[\x00-\x1f\x7f]/.test(raw.separator)) {
     cfg.separator = raw.separator;
@@ -121,6 +123,11 @@ const CONFIG = loadConfig();
 
 // Shared width (cells) for all progress bars: context, current, weekly.
 const BAR_WIDTH = 6;
+
+// Highest `compact` detail level, and the model-name budget at that level. See the
+// buildLines() ladder in outputStatus for what each level drops.
+const MAX_COMPACT_LEVEL = 3;
+const COMPACT_MODEL_LEN = 10;
 
 // Max characters shown for the git branch; longer names are tail-truncated with "…".
 // Tail-truncation keeps the start (ticket IDs like "TAMA5-32796" live there) visible.
@@ -193,6 +200,12 @@ function shortenModel(name) {
 // Tail-truncate an over-long branch name, preserving the leading ticket ID.
 function truncateBranch(name) {
   return name.length > MAX_BRANCH_LEN ? name.slice(0, MAX_BRANCH_LEN - 1) + '…' : name;
+}
+
+// Model name at the tightest compact level. Short names ("Opus 5") are already within
+// budget and pass through untouched.
+function truncateModel(name) {
+  return name.length > COMPACT_MODEL_LEN ? name.slice(0, COMPACT_MODEL_LEN - 1) + '…' : name;
 }
 
 // Resolve the repo's git dir by walking up from `dir` (no `git` subprocess). Handles
@@ -302,7 +315,7 @@ function formatAheadBehind(ab) {
   return s;
 }
 
-function getContextBar(remaining) {
+function getContextBar(remaining, { showBar = true } = {}) {
   const effectiveRemaining = remaining ?? 100;
   const used = Math.max(0, Math.min(100, 100 - Math.round(effectiveRemaining)));
 
@@ -317,7 +330,9 @@ function getContextBar(remaining) {
   else color = colors.blink + colors.red;
 
   // Compact label form: "C<used> <bar>" (e.g. "C45 ███░░░"), colored as a whole.
-  return `${color}${CONFIG.labels.context}${used} ${bar}${colors.reset}`;
+  // showBar: false drops the glyphs and keeps the number ("C45") when space is tight.
+  const barPart = showBar ? ` ${bar}` : '';
+  return `${color}${CONFIG.labels.context}${used}${barPart}${colors.reset}`;
 }
 
 // Render a compact usage segment from raw data: "<label><pct> ↺ <countdown>"
@@ -374,11 +389,14 @@ function scopedLabel(entry) {
 // or null/absent; models is an array of { label, percentage, resetsAt } (possibly empty).
 // Returns { current, weekly, models } — the first two rendered strings or null, models a
 // (possibly empty) array of rendered strings.
-function buildUsageBars(fiveHour, weekly, models) {
+// showCountdown: false drops the "↺ 2d13h" suffix, the cheapest detail to lose when the
+// terminal is narrow — the percentage is what you glance at, the reset time rarely.
+function buildUsageBars(fiveHour, weekly, models, { showCountdown = true } = {}) {
+  const at = (e) => (showCountdown ? e.resetsAt : null);
   return {
-    current: fiveHour ? buildUsageBar(CONFIG.labels.session, fiveHour.percentage, fiveHour.resetsAt) : null,
-    weekly: weekly ? buildUsageBar(CONFIG.labels.weekly, weekly.percentage, weekly.resetsAt) : null,
-    models: (models || []).map(m => buildUsageBar(scopedLabel(m), m.percentage, m.resetsAt))
+    current: fiveHour ? buildUsageBar(CONFIG.labels.session, fiveHour.percentage, at(fiveHour)) : null,
+    weekly: weekly ? buildUsageBar(CONFIG.labels.weekly, weekly.percentage, at(weekly)) : null,
+    models: (models || []).map(m => buildUsageBar(scopedLabel(m), m.percentage, at(m)))
   };
 }
 
@@ -628,13 +646,6 @@ function getRawUsage(callback) {
   });
 }
 
-// Get usage, cache-first, rendered.
-function getUsageWithCache(callback) {
-  getRawUsage((data) => {
-    callback(data ? buildUsageBars(data.fiveHour, data.weekly, data.models) : null);
-  });
-}
-
 // Model-scoped weekly limits only, cache-first. Used alongside the stdin H/W bars, which
 // can't carry them. Falls back to the stale cache and finally to [] so a failed or slow
 // call costs the scoped bars but never the bars stdin already gave us.
@@ -706,37 +717,65 @@ function outputStatus(data, usage) {
     const sessionId = data?.session_id || '';
     const remaining = data?.context_window?.remaining_percentage;
 
-    const contextBar = getContextBar(remaining);
     const cost = DISABLED.has('cost') ? '' : getCostSegment(data);
     const task = DISABLED.has('task') ? '' : getCurrentTask(sessionId);
 
-    // Every renderable segment by name. '' means "nothing to show" (omitted); `scoped` is
-    // an array because an account can report more than one model-scoped weekly limit.
-    const segments = {
-      dir: branch
-        ? `${dirname} ${colors.dim}⎇ ${branch}${colors.reset}${sync ? ' ' + sync : ''}`
-        : dirname,
-      model: effort ? `${model}${getEffortColor(effort)} · ${effort}${colors.reset}` : model,
-      context: contextBar,
-      session: usage?.current || '',
-      weekly: usage?.weekly || '',
-      scoped: usage?.models || [],
-      cost: cost,
-      task: task ? `${colors.dim}${task}${colors.reset}` : ''
+    // Render every segment at a given detail level (0 = full). Higher levels shed the
+    // least-valuable detail first, so a narrow terminal loses a reset countdown long
+    // before it loses a percentage:
+    //   0  everything
+    //   1  no "↺ <countdown>" on the usage bars
+    //   2  + no context bar glyphs (the "C38" number stays)
+    //   3  + no effort suffix, model name truncated
+    // '' means "nothing to show" (omitted); `scoped` is an array because an account can
+    // report more than one model-scoped weekly limit.
+    const buildLines = (level) => {
+      const bars = buildUsageBars(usage?.fiveHour, usage?.weekly, usage?.models,
+        { showCountdown: level < 1 });
+      const modelText = level < 3 ? model : truncateModel(model);
+
+      const segments = {
+        dir: branch
+          ? `${dirname} ${colors.dim}⎇ ${branch}${colors.reset}${sync ? ' ' + sync : ''}`
+          : dirname,
+        model: (effort && level < 3)
+          ? `${modelText}${getEffortColor(effort)} · ${effort}${colors.reset}`
+          : modelText,
+        context: getContextBar(remaining, { showBar: level < 2 }),
+        session: bars.current || '',
+        weekly: bars.weekly || '',
+        scoped: bars.models,
+        cost: cost,
+        task: task ? `${colors.dim}${task}${colors.reset}` : ''
+      };
+
+      // Walk the configured order, switching to the wrap target after `wrapAfter`. The
+      // switch is positional: it happens even when that segment rendered nothing, so the
+      // split stays where the config asked for it. Default order/wrapAfter reproduce the
+      // original layout exactly — identity + context, then usage/cost/task.
+      const l1 = [];
+      const l2 = [];
+      let target = l1;
+      for (const name of CONFIG.order) {
+        const value = segments[name];
+        if (Array.isArray(value)) target.push(...value);
+        else if (value) target.push(value);
+        if (name === CONFIG.wrapAfter) target = l2;
+      }
+      return { line1: l1, line2: l2 };
     };
 
-    // Walk the configured order, switching to the wrap target after `wrapAfter`. The
-    // switch is positional: it happens even when that segment rendered nothing, so the
-    // split stays where the config asked for it. Default order/wrapAfter reproduce the
-    // original layout exactly — identity + context, then usage/cost/task.
-    const line1 = [];
-    const line2 = [];
-    let target = line1;
-    for (const name of CONFIG.order) {
-      const value = segments[name];
-      if (Array.isArray(value)) target.push(...value);
-      else if (value) target.push(value);
-      if (name === CONFIG.wrapAfter) target = line2;
+    // With `compact` off (the default) only level 0 is ever built, so output is exactly
+    // what it was before. With it on, step down until the line fits on one row — wrapping
+    // stays the last resort, used only once there's no detail left to shed. An unknown
+    // width means no measuring is possible, so full detail is the safe choice.
+    const cols = parseInt(process.env.COLUMNS, 10);
+    let { line1, line2 } = buildLines(0);
+    if (CONFIG.compact && Number.isFinite(cols) && cols > 0) {
+      for (let level = 1; level <= MAX_COMPACT_LEVEL; level++) {
+        if (visibleWidth([...line1, ...line2].join(SEGMENT_SEP)) <= cols - WIDTH_MARGIN) break;
+        ({ line1, line2 } = buildLines(level));
+      }
     }
 
     process.stdout.write(layout(line1, line2));
@@ -746,15 +785,17 @@ function outputStatus(data, usage) {
 }
 
 function outputFallback(usage) {
-  const contextBar = getContextBar(undefined);
-  const parts = ['~', 'Claude', contextBar];
-  if (usage?.current) parts.push(usage.current);
-  if (usage?.weekly) parts.push(usage.weekly);
-  if (usage?.models?.length) parts.push(...usage.models);
+  const bars = buildUsageBars(usage?.fiveHour, usage?.weekly, usage?.models);
+  const parts = ['~', 'Claude', getContextBar(undefined)];
+  if (bars.current) parts.push(bars.current);
+  if (bars.weekly) parts.push(bars.weekly);
+  parts.push(...bars.models);
   process.stdout.write(parts.join(SEGMENT_SEP));
 }
 
-// Resolve usage bars for a (possibly null) parsed stdin payload.
+// Resolve raw usage data ({ fiveHour, weekly, models }) for a parsed stdin payload.
+// Raw rather than rendered: the renderer re-renders at several detail levels to fit the
+// terminal, so it needs the numbers, not finished strings.
 // Order: API-key users get none; otherwise prefer stdin `rate_limits` (no network),
 // then fall back to the cache+API flow when stdin lacks it (cold start / non-Pro/Max).
 function resolveUsage(data, callback) {
@@ -767,10 +808,10 @@ function resolveUsage(data, callback) {
     // API payload, so they come from the cache — refreshed on the same TTL as every other
     // usage read, which keeps at most one call per FRESH_TTL_MS regardless of render rate.
     return getScopedModels((models) => {
-      callback(buildUsageBars(fromStdin.fiveHour, fromStdin.weekly, models));
+      callback({ fiveHour: fromStdin.fiveHour, weekly: fromStdin.weekly, models });
     });
   }
-  getUsageWithCache(callback);
+  getRawUsage(callback);
 }
 
 // Process with timeout
