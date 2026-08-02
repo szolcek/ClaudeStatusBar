@@ -13,7 +13,7 @@ const { execSync, execFileSync } = require('child_process');
 const IS_API_KEY = !!process.env.ANTHROPIC_API_KEY;
 
 // Optional segment opt-out: CTXLINE_DISABLE is a comma list of segments to hide.
-// Recognized: branch, effort, cost, task, usage (S+W+model-scoped). dir/model/context always render.
+// Recognized: branch, effort, cost, task, usage (H+W+model-scoped). dir/model/context always render.
 // Unknown names are ignored. Disabling a segment also skips its work (git, todo read,
 // usage fetch).
 const DISABLED = new Set(
@@ -23,6 +23,99 @@ const DISABLED = new Set(
     .filter(Boolean)
 );
 
+// Optional config file: ~/.claude/ctxline.json (override the path with CTXLINE_CONFIG).
+// Absent is the normal case — the statusline stays zero-config, and every key below is
+// independently validated so one bad value falls back to its own default instead of
+// discarding the whole file. A malformed or unreadable file is ignored outright: a config
+// mistake must never be able to break the statusline.
+const CONFIG_FILE = process.env.CTXLINE_CONFIG || path.join(os.homedir(), '.claude', 'ctxline.json');
+
+// Segment names usable in `order`. `dir` carries the git branch and ahead/behind, `model`
+// carries the effort suffix, `scoped` covers every model-scoped weekly limit at once.
+const SEGMENT_NAMES = ['dir', 'model', 'context', 'session', 'weekly', 'scoped', 'cost', 'task'];
+
+const DEFAULT_CONFIG = {
+  labels: { session: 'H', weekly: 'W', context: 'C' },
+  modelLabels: {},                 // { "<model display name>": "<label>" }, case-insensitive
+  order: SEGMENT_NAMES.slice(),
+  wrapAfter: 'context',            // line breaks after this segment when too wide; null = never
+  separator: ' │ ',
+  thresholds: [50, 75, 90]         // usage colors: green <50, yellow <75, orange <90, else red
+};
+
+// A label is short printable text. The length cap keeps a stray value from blowing out the
+// line, and control chars are rejected so a config file can't inject terminal escapes.
+function isValidLabel(v) {
+  return typeof v === 'string' && v.length > 0 && v.length <= 4 && !/[\x00-\x1f\x7f]/.test(v);
+}
+
+function loadConfig() {
+  const cfg = {
+    ...DEFAULT_CONFIG,
+    labels: { ...DEFAULT_CONFIG.labels },
+    modelLabels: {},
+    order: DEFAULT_CONFIG.order.slice(),
+    thresholds: DEFAULT_CONFIG.thresholds.slice()
+  };
+
+  let raw;
+  try {
+    if (!fs.existsSync(CONFIG_FILE)) return cfg;
+    raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  } catch (e) {
+    return cfg;                    // unreadable or invalid JSON -> silent defaults
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return cfg;
+
+  if (raw.labels && typeof raw.labels === 'object') {
+    for (const key of Object.keys(cfg.labels)) {
+      if (isValidLabel(raw.labels[key])) cfg.labels[key] = raw.labels[key];
+    }
+  }
+
+  if (raw.modelLabels && typeof raw.modelLabels === 'object') {
+    for (const [name, label] of Object.entries(raw.modelLabels)) {
+      if (name.trim() && isValidLabel(label)) cfg.modelLabels[name.trim().toLowerCase()] = label;
+    }
+  }
+
+  // Unknown names and duplicates are dropped; omitting a segment hides it (CTXLINE_DISABLE
+  // still applies on top). An order that survives as empty is ignored, so a file of typos
+  // can't produce a blank statusline.
+  if (Array.isArray(raw.order)) {
+    const seen = new Set();
+    const order = [];
+    for (const name of raw.order) {
+      if (typeof name !== 'string' || !SEGMENT_NAMES.includes(name) || seen.has(name)) continue;
+      seen.add(name);
+      order.push(name);
+    }
+    if (order.length) cfg.order = order;
+  }
+
+  // The wrap point must be a segment that actually renders, otherwise there's nowhere to
+  // break — an unusable value means "never wrap" rather than a silent fallback elsewhere.
+  if (raw.wrapAfter === null) cfg.wrapAfter = null;
+  else if (typeof raw.wrapAfter === 'string' && SEGMENT_NAMES.includes(raw.wrapAfter)) cfg.wrapAfter = raw.wrapAfter;
+  if (!cfg.order.includes(cfg.wrapAfter)) cfg.wrapAfter = null;
+
+  if (typeof raw.separator === 'string' && raw.separator.length > 0 && !/[\x00-\x1f\x7f]/.test(raw.separator)) {
+    cfg.separator = raw.separator;
+  }
+
+  // Three strictly ascending percentages. Anything else keeps the defaults whole — a
+  // partially-applied threshold set would give nonsensical color bands.
+  if (Array.isArray(raw.thresholds) && raw.thresholds.length === 3 &&
+      raw.thresholds.every(n => Number.isFinite(n) && n >= 0 && n <= 100) &&
+      raw.thresholds[0] < raw.thresholds[1] && raw.thresholds[1] < raw.thresholds[2]) {
+    cfg.thresholds = raw.thresholds.slice();
+  }
+
+  return cfg;
+}
+
+const CONFIG = loadConfig();
+
 // Shared width (cells) for all progress bars: context, current, weekly.
 const BAR_WIDTH = 6;
 
@@ -30,8 +123,8 @@ const BAR_WIDTH = 6;
 // Tail-truncation keeps the start (ticket IDs like "TAMA5-32796" live there) visible.
 const MAX_BRANCH_LEN = 24;
 
-// Separator between segments on a rendered line.
-const SEGMENT_SEP = ' │ ';
+// Separator between segments on a rendered line (config: `separator`).
+const SEGMENT_SEP = CONFIG.separator;
 
 // Cells reserved at the terminal edge when deciding to wrap to a second line.
 // 0 = use the full COLUMNS; bump it if Claude Code reserves columns and the line
@@ -78,9 +171,10 @@ function getEffortColor(level) {
 }
 
 function getUsageColor(percentage) {
-  if (percentage < 50) return colors.green;
-  if (percentage < 75) return colors.yellow;
-  if (percentage < 90) return colors.orange;
+  const [green, yellow, orange] = CONFIG.thresholds;
+  if (percentage < green) return colors.green;
+  if (percentage < yellow) return colors.yellow;
+  if (percentage < orange) return colors.orange;
   return colors.red;
 }
 
@@ -216,7 +310,7 @@ function getContextBar(remaining) {
   else color = colors.blink + colors.red;
 
   // Compact label form: "C<used> <bar>" (e.g. "C45 ███░░░"), colored as a whole.
-  return `${color}C${used} ${bar}${colors.reset}`;
+  return `${color}${CONFIG.labels.context}${used} ${bar}${colors.reset}`;
 }
 
 // Render a compact usage segment from raw data: "<label><pct> ↺ <countdown>"
@@ -255,9 +349,19 @@ function buildUsageBar(label, percentage, resetsAt) {
 // five_hour and seven_day under rate_limits, so the scoped limits always come from the
 // cache/API path even when stdin supplies the H and W bars.
 const LEGACY_MODEL_WEEKLY_KEYS = [
-  { key: 'seven_day_opus', label: 'O' },
-  { key: 'seven_day_sonnet', label: 'S' }
+  { key: 'seven_day_opus', name: 'Opus' },
+  { key: 'seven_day_sonnet', name: 'Sonnet' }
 ];
+
+// Label for a scoped entry: the model's initial by default, overridden by config
+// `modelLabels` (keyed by display name, case-insensitive). Derived at render time rather
+// than at parse time so a config edit takes effect on the next render instead of waiting
+// for the usage cache to expire. `label` is the pre-name cache shape.
+function scopedLabel(entry) {
+  const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+  if (!name) return entry?.label || '?';
+  return CONFIG.modelLabels[name.toLowerCase()] || name.charAt(0).toUpperCase();
+}
 
 // Build the usage segments from raw entries. fiveHour/weekly are { percentage, resetsAt }
 // or null/absent; models is an array of { label, percentage, resetsAt } (possibly empty).
@@ -265,11 +369,9 @@ const LEGACY_MODEL_WEEKLY_KEYS = [
 // (possibly empty) array of rendered strings.
 function buildUsageBars(fiveHour, weekly, models) {
   return {
-    // 'S' for session (the 5-hour window), pairing with 'W' for weekly. Note this shares a
-    // letter with a Sonnet-scoped weekly bar, which also labels by the model's initial.
-    current: fiveHour ? buildUsageBar('S', fiveHour.percentage, fiveHour.resetsAt) : null,
-    weekly: weekly ? buildUsageBar('W', weekly.percentage, weekly.resetsAt) : null,
-    models: (models || []).map(m => buildUsageBar(m.label, m.percentage, m.resetsAt))
+    current: fiveHour ? buildUsageBar(CONFIG.labels.session, fiveHour.percentage, fiveHour.resetsAt) : null,
+    weekly: weekly ? buildUsageBar(CONFIG.labels.weekly, weekly.percentage, weekly.resetsAt) : null,
+    models: (models || []).map(m => buildUsageBar(scopedLabel(m), m.percentage, m.resetsAt))
   };
 }
 
@@ -294,19 +396,16 @@ function parseScopedLimits(usage) {
       const name = entry.scope?.model?.display_name;
       const pct = normalizePercentage(entry.percent);
       if (typeof name !== 'string' || !name.trim() || pct == null) continue;
-      scoped.push({
-        label: name.trim().charAt(0).toUpperCase(),
-        percentage: pct,
-        resetsAt: entry.resets_at || null
-      });
+      // Store the model name, not a label — see scopedLabel().
+      scoped.push({ name: name.trim(), percentage: pct, resetsAt: entry.resets_at || null });
     }
     if (scoped.length) return scoped;
   }
 
-  for (const { key, label } of LEGACY_MODEL_WEEKLY_KEYS) {
+  for (const { key, name } of LEGACY_MODEL_WEEKLY_KEYS) {
     const seg = usage?.[key];
     const pct = seg ? normalizePercentage(seg.utilization) : null;
-    if (pct != null) scoped.push({ label, percentage: pct, resetsAt: seg.resets_at || null });
+    if (pct != null) scoped.push({ name, percentage: pct, resetsAt: seg.resets_at || null });
   }
   return scoped;
 }
@@ -371,7 +470,8 @@ function readCachedUsage() {
     if (data.weekly != null && !isValidUsageEntry(data.weekly)) return null;
     if (data.models != null) {
       if (!Array.isArray(data.models)) return null;
-      if (!data.models.every(m => typeof m?.label === 'string' && isValidUsageEntry(m))) return null;
+      // Accept either shape: `name` (current) or `label` (written before modelLabels).
+      if (!data.models.every(m => (typeof m?.name === 'string' || typeof m?.label === 'string') && isValidUsageEntry(m))) return null;
     }
 
     return { age: Date.now() - cache.timestamp, data };
@@ -528,7 +628,7 @@ function getUsageWithCache(callback) {
   });
 }
 
-// Model-scoped weekly limits only, cache-first. Used alongside the stdin S/W bars, which
+// Model-scoped weekly limits only, cache-first. Used alongside the stdin H/W bars, which
 // can't carry them. Falls back to the stale cache and finally to [] so a failed or slow
 // call costs the scoped bars but never the bars stdin already gave us.
 function getScopedModels(callback) {
@@ -603,20 +703,34 @@ function outputStatus(data, usage) {
     const cost = DISABLED.has('cost') ? '' : getCostSegment(data);
     const task = DISABLED.has('task') ? '' : getCurrentTask(sessionId);
 
-    // line1 = identity + context (always); line2 = usage/cost/task (wrap target).
-    const line1 = [];
-    line1.push(branch
-      ? `${dirname} ${colors.dim}⎇ ${branch}${colors.reset}${sync ? ' ' + sync : ''}`
-      : dirname);
-    line1.push(effort ? `${model}${getEffortColor(effort)} · ${effort}${colors.reset}` : model);
-    line1.push(contextBar);
+    // Every renderable segment by name. '' means "nothing to show" (omitted); `scoped` is
+    // an array because an account can report more than one model-scoped weekly limit.
+    const segments = {
+      dir: branch
+        ? `${dirname} ${colors.dim}⎇ ${branch}${colors.reset}${sync ? ' ' + sync : ''}`
+        : dirname,
+      model: effort ? `${model}${getEffortColor(effort)} · ${effort}${colors.reset}` : model,
+      context: contextBar,
+      session: usage?.current || '',
+      weekly: usage?.weekly || '',
+      scoped: usage?.models || [],
+      cost: cost,
+      task: task ? `${colors.dim}${task}${colors.reset}` : ''
+    };
 
+    // Walk the configured order, switching to the wrap target after `wrapAfter`. The
+    // switch is positional: it happens even when that segment rendered nothing, so the
+    // split stays where the config asked for it. Default order/wrapAfter reproduce the
+    // original layout exactly — identity + context, then usage/cost/task.
+    const line1 = [];
     const line2 = [];
-    if (usage?.current) line2.push(usage.current);
-    if (usage?.weekly) line2.push(usage.weekly);
-    if (usage?.models?.length) line2.push(...usage.models);
-    if (cost) line2.push(cost);
-    if (task) line2.push(`${colors.dim}${task}${colors.reset}`);
+    let target = line1;
+    for (const name of CONFIG.order) {
+      const value = segments[name];
+      if (Array.isArray(value)) target.push(...value);
+      else if (value) target.push(value);
+      if (name === CONFIG.wrapAfter) target = line2;
+    }
 
     process.stdout.write(layout(line1, line2));
   } catch (e) {
@@ -630,7 +744,7 @@ function outputFallback(usage) {
   if (usage?.current) parts.push(usage.current);
   if (usage?.weekly) parts.push(usage.weekly);
   if (usage?.models?.length) parts.push(...usage.models);
-  process.stdout.write(parts.join(' \u2502 '));
+  process.stdout.write(parts.join(SEGMENT_SEP));
 }
 
 // Resolve usage bars for a (possibly null) parsed stdin payload.

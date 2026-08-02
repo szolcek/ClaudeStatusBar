@@ -40,10 +40,25 @@ function run(input, opts = {}) {
   } else {
     delete env.CTXLINE_DISABLE;
   }
+  // Config file. opts.config takes an object (serialized) or a raw string (to exercise
+  // malformed input). Default: a path that doesn't exist, so a real config in the dev
+  // environment can never leak into a test.
+  env.CTXLINE_CONFIG = opts.config != null
+    ? writeConfig(opts.config)
+    : path.join(FAKE_HOME, 'no-such-config.json');
   const res = spawnSync(process.execPath, [SCRIPT], { input, encoding: 'utf8', timeout: 5000, env });
   const raw = res.stdout || '';
   const clean = raw.replace(/\x1b\[[0-9;]*m/g, ''); // strip ANSI for readable assertions
   return { code: res.status, raw, clean };
+}
+
+// Write a config file into the shared fake HOME and return its path. Each call gets a
+// distinct filename so tests can't observe each other's config.
+let configSeq = 0;
+function writeConfig(config) {
+  const file = path.join(FAKE_HOME, `ctxline-${configSeq++}.json`);
+  fs.writeFileSync(file, typeof config === 'string' ? config : JSON.stringify(config));
+  return file;
 }
 
 // Build a throwaway HOME containing a tokenless credentials file (so getApiUsage
@@ -98,7 +113,7 @@ function fixtureWithRateLimits(remaining, { five = 23.5, seven = 41.2 } = {}) {
 }
 
 // Add model-scoped limits to an already-seeded cache, so the render path can be tested
-// without a network call. Each entry is { label, percentage }; the reset is 62h out.
+// without a network call. Each entry is { name, percentage }; the reset is 62h out.
 function seedScopedCache(home, models) {
   const cacheFile = path.join(home, '.claude', 'cache', 'usage-cache.json');
   const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
@@ -360,7 +375,7 @@ test('fresh cache -> current + weekly rendered from cache (no API call)', () => 
   const home = seedHome({ cacheAgeMs: 5000, percentage: 42, weeklyPercentage: 31 }); // < FRESH_TTL (30s)
   const { code, clean } = run(fixture(40), { home, usage: true });
   assert.strictEqual(code, 0);
-  assert.match(clean, /S42\b/);
+  assert.match(clean, /H42\b/);
   assert.match(clean, /W31\b/);
   assert.match(clean, /W31 ↺ 2d\d{1,2}h/);                    // day-aware reset countdown (Xd Yh)
 });
@@ -368,7 +383,7 @@ test('fresh cache -> current + weekly rendered from cache (no API call)', () => 
 test('stale cache + failing API -> usage stays visible (does not disappear)', () => {
   const home = seedHome({ cacheAgeMs: 2 * 60 * 1000, percentage: 57 }); // > FRESH, < STALE
   const { clean } = run(fixture(40), { home, usage: true });
-  assert.match(clean, /S57\b/);
+  assert.match(clean, /H57\b/);
 });
 
 test('expired cache + failing API -> usage omitted', () => {
@@ -377,7 +392,7 @@ test('expired cache + failing API -> usage omitted', () => {
   assert.strictEqual(code, 0);                                  // ran successfully
   assert.match(clean, /C\d+ /, 'expected the normal line to still render');
   assert.ok(!clean.includes('↺'), 'usage (and its reset glyph) should be omitted once cache is too old');
-  assert.ok(!clean.includes('S57'), 'current usage should be omitted once cache is too old');
+  assert.ok(!clean.includes('H57'), 'current usage should be omitted once cache is too old');
 });
 
 // Usage from stdin `rate_limits`: the network/cache path is bypassed entirely.
@@ -387,7 +402,7 @@ test('stdin rate_limits -> 5h/7d render with no cache and no creds', () => {
   // can render is straight from stdin rate_limits (proves the API/cache path is skipped).
   const { code, clean } = run(fixtureWithRateLimits(40), { usage: true });
   assert.strictEqual(code, 0);
-  assert.match(clean, /S24\b/);                                 // 23.5 -> 24 (fractional, rounded)
+  assert.match(clean, /H24\b/);                                 // 23.5 -> 24 (fractional, rounded)
   assert.match(clean, /W41\b/);                                 // 41.2 -> 41
   assert.match(clean, /W41 ↺ 2d\d{1,2}h/);                      // epoch-seconds -> day-aware countdown
 });
@@ -421,7 +436,7 @@ function usagePayload({ scopedPercent = 86, model = 'Fable' } = {}) {
 test('parseScopedLimits picks weekly_scoped out of the limits array', () => {
   const scoped = parseScopedLimits(usagePayload());
   assert.deepStrictEqual(scoped, [
-    { label: 'F', percentage: 86, resetsAt: '2026-08-05T13:00:00+00:00' }
+    { name: 'Fable', percentage: 86, resetsAt: '2026-08-05T13:00:00+00:00' }
   ]);
 });
 
@@ -432,10 +447,9 @@ test('parseScopedLimits ignores session and weekly_all entries', () => {
   assert.ok(!scoped.some(s => s.percentage === 43 || s.percentage === 63));
 });
 
-test('parseScopedLimits labels by model initial, so a new family needs no code change', () => {
-  assert.strictEqual(parseScopedLimits(usagePayload({ model: 'Opus' }))[0].label, 'O');
-  assert.strictEqual(parseScopedLimits(usagePayload({ model: 'sonnet' }))[0].label, 'S');
-  assert.strictEqual(parseScopedLimits(usagePayload({ model: 'Newmodel' }))[0].label, 'N');
+test('parseScopedLimits keeps the model name for render-time labelling', () => {
+  assert.strictEqual(parseScopedLimits(usagePayload({ model: 'Opus' }))[0].name, 'Opus');
+  assert.strictEqual(parseScopedLimits(usagePayload({ model: 'Newmodel' }))[0].name, 'Newmodel');
 });
 
 test('parseScopedLimits skips malformed entries instead of rendering NaN', () => {
@@ -445,7 +459,7 @@ test('parseScopedLimits skips malformed entries instead of rendering NaN', () =>
   payload.limits.push({ kind: 'weekly_scoped', percent: 50, scope: null });
   const scoped = parseScopedLimits(payload);
   assert.strictEqual(scoped.length, 1, 'only the well-formed entry survives');
-  assert.ok(!scoped.some(s => s.label === 'G'));
+  assert.ok(!scoped.some(s => s.name === 'Ghost'));
 });
 
 test('parseScopedLimits falls back to legacy seven_day_<model> keys when limits is absent', () => {
@@ -455,7 +469,7 @@ test('parseScopedLimits falls back to legacy seven_day_<model> keys when limits 
     seven_day_sonnet: null
   };
   assert.deepStrictEqual(parseScopedLimits(legacy), [
-    { label: 'O', percentage: 77, resetsAt: '2026-08-05T13:00:00+00:00' }
+    { name: 'Opus', percentage: 77, resetsAt: '2026-08-05T13:00:00+00:00' }
   ]);
 });
 
@@ -464,34 +478,34 @@ test('parseScopedLimits does not double-count when both shapes are present', () 
   both.seven_day_opus = { utilization: 77, resets_at: '2026-08-05T13:00:00+00:00' };
   const scoped = parseScopedLimits(both);
   assert.strictEqual(scoped.length, 1, 'the limits array wins outright');
-  assert.strictEqual(scoped[0].label, 'F');
+  assert.strictEqual(scoped[0].name, 'Fable');
 });
 
 test('no scoped limits -> nothing extra renders', () => {
   assert.deepStrictEqual(parseScopedLimits({ five_hour: { utilization: 43 } }), []);
   const { clean } = run(fixtureWithRateLimits(40), { usage: true });
-  assert.match(clean, /S24\b/);
+  assert.match(clean, /H24\b/);
   assert.match(clean, /W41\b/);
   assert.ok(!/\bF\d+/.test(clean), 'no F bar when the account reports no scoped limit');
 });
 
 // Rendering: scoped bars come from the cache, including on the stdin fast path.
 
-test('scoped bar renders alongside the stdin S/W bars', () => {
-  // The crux of the feature: stdin supplies S/W (no network), the scoped limit comes from
+test('scoped bar renders alongside the stdin H/W bars', () => {
+  // The crux of the feature: stdin supplies H/W (no network), the scoped limit comes from
   // the cache. Before this, a scoped limit could never reach the screen in a live session.
   const home = seedHome({ cacheAgeMs: 5000 });
-  seedScopedCache(home, [{ label: 'F', percentage: 86 }]);
+  seedScopedCache(home, [{ name: 'Fable', percentage: 86 }]);
   const { code, clean } = run(fixtureWithRateLimits(40), { home, usage: true });
   assert.strictEqual(code, 0);
-  assert.match(clean, /S24\b/, 'S still comes from stdin, not the cache');
+  assert.match(clean, /H24\b/, 'H still comes from stdin, not the cache');
   assert.match(clean, /W41\b/, 'W still comes from stdin');
   assert.match(clean, /F86\b/, 'scoped bar comes from the cache');
 });
 
 test('scoped bars render after W, in payload order', () => {
   const home = seedHome({ cacheAgeMs: 5000 });
-  seedScopedCache(home, [{ label: 'O', percentage: 12 }, { label: 'F', percentage: 86 }]);
+  seedScopedCache(home, [{ name: 'Opus', percentage: 12 }, { name: 'Fable', percentage: 86 }]);
   const { clean } = run(fixtureWithRateLimits(40), { home, usage: true });
   const parts = clean.split('│').map(s => s.trim());
   const idx = (re) => parts.findIndex(p => re.test(p));
@@ -501,18 +515,18 @@ test('scoped bars render after W, in payload order', () => {
 
 test('CTXLINE_DISABLE=usage also hides the scoped bars', () => {
   const home = seedHome({ cacheAgeMs: 5000 });
-  seedScopedCache(home, [{ label: 'F', percentage: 86 }]);
+  seedScopedCache(home, [{ name: 'Fable', percentage: 86 }]);
   const { clean } = run(fixtureWithRateLimits(40), { home, usage: true, disable: 'usage' });
   assert.ok(!/\bF\d+/.test(clean), 'scoped bar is part of the usage segment');
-  assert.ok(!clean.includes('S24'), 'S bar hidden too');
+  assert.ok(!clean.includes('H24'), 'H bar hidden too');
 });
 
 test('a cache written before scoped bars existed stays valid', () => {
-  // No `models` key at all — must be accepted (S/W render, no scoped bars) rather than
+  // No `models` key at all — must be accepted (H/W render, no scoped bars) rather than
   // rejected as malformed, which would force a refetch for everyone on upgrade.
   const home = seedHome({ cacheAgeMs: 5000, percentage: 42, weeklyPercentage: 31 });
   const { clean } = run(fixture(40), { home, usage: true });
-  assert.match(clean, /S42\b/, 'legacy cache without models is still readable');
+  assert.match(clean, /H42\b/, 'legacy cache without models is still readable');
   assert.match(clean, /W31\b/);
   assert.ok(!/\bF\d+/.test(clean));
 });
@@ -521,8 +535,8 @@ test('stdin rate_limits takes precedence over a fresh cache', () => {
   // Fresh cache says 42% / 31%; stdin says 23.5% / 41.2%. stdin must win (cache not read).
   const home = seedHome({ cacheAgeMs: 5000, percentage: 42, weeklyPercentage: 31 });
   const { clean } = run(fixtureWithRateLimits(40), { home, usage: true });
-  assert.match(clean, /S24\b/);
-  assert.ok(!clean.includes('S42'), 'cached 5h value must not appear when stdin rate_limits is present');
+  assert.match(clean, /H24\b/);
+  assert.ok(!clean.includes('H42'), 'cached 5h value must not appear when stdin rate_limits is present');
 });
 
 // Responsive layout: usage/cost/task wrap to a second line only when the rendered line
@@ -535,14 +549,14 @@ test('narrow terminal wraps usage to a second line (line1 identity+context, line
   const [l1, l2] = clean.split('\n');
   assert.match(l1, /C\d+ /, 'context stays on line 1');
   assert.ok(!/[HW]\d+/.test(l1), 'usage must not be on line 1 when wrapped');
-  assert.match(l2, /S\d+\b/, 'current usage moves to line 2');
+  assert.match(l2, /H\d+\b/, 'current usage moves to line 2');
   assert.match(l2, /W\d+\b/, 'weekly usage moves to line 2');
 });
 
 test('wide terminal keeps everything on one line', () => {
   const { raw, clean } = run(fixtureWithRateLimits(40), { usage: true, columns: 200 });
   assert.ok(!raw.includes('\n'), 'no wrap when the line fits');
-  assert.match(clean, /C\d+ .*S\d+\b.*W\d+\b/, 'context + usage all on one line');
+  assert.match(clean, /C\d+ .*H\d+\b.*W\d+\b/, 'context + usage all on one line');
 });
 
 test('unknown width (COLUMNS unset) never wraps', () => {
@@ -673,10 +687,10 @@ test('disable=branch hides the branch (and ahead/behind) glyph', () => {
   assert.ok(!clean.includes('⎇'), 'branch segment hidden');
 });
 
-test('disable=usage hides S/W', () => {
+test('disable=usage hides H/W', () => {
   const home = seedHome({ cacheAgeMs: 5000, percentage: 42, weeklyPercentage: 31 });
   const { clean } = run(fixture(40), { home, usage: true, disable: 'usage' });
-  assert.ok(!clean.includes('S42') && !clean.includes('W31'), 'usage segments hidden');
+  assert.ok(!clean.includes('H42') && !clean.includes('W31'), 'usage segments hidden');
   assert.ok(!clean.includes('↺'), 'no reset countdown');
   assert.match(clean, /C\d+ /, 'context still renders');
 });
@@ -697,4 +711,155 @@ test('disable accepts multiple segments', () => {
   const { clean } = run(fixture(40, '/no/such/repo', 'Opus 4.8', 'high', 0.42), { disable: 'cost,effort' });
   assert.ok(!clean.includes('$'), 'cost hidden');
   assert.strictEqual(clean.split(' │ ')[1], 'Opus 4.8', 'effort hidden');
+});
+
+// ---------------------------------------------------------------------------
+// Config file (~/.claude/ctxline.json; path overridable via CTXLINE_CONFIG).
+// Every key is optional. Anything invalid falls back to its own default without
+// discarding the rest of the file, and a broken file never breaks the render.
+
+const ESC = '';
+
+test('no config file -> stock defaults', () => {
+  const { code, clean } = run(fixtureWithRateLimits(40), { usage: true });
+  assert.strictEqual(code, 0);
+  assert.match(clean, /H24\b/, 'session bar defaults to H');
+  assert.match(clean, /W41\b/);
+  assert.match(clean, /C\d+ /, 'context bar defaults to C');
+  assert.ok(clean.includes(' │ '), 'default separator');
+});
+
+test('labels: session/weekly/context are overridable', () => {
+  const config = { labels: { session: 'S', weekly: '7d', context: 'ctx' } };
+  const { clean } = run(fixtureWithRateLimits(40), { usage: true, config });
+  assert.match(clean, /S24\b/, 'session relabelled');
+  assert.match(clean, /7d41\b/, 'multi-char label works');
+  assert.match(clean, /ctx\d+ /, 'context relabelled');
+  assert.ok(!/\bH24\b/.test(clean), 'old label gone');
+});
+
+test('modelLabels: a scoped bar is relabelled by model name', () => {
+  const home = seedHome({ cacheAgeMs: 5000 });
+  seedScopedCache(home, [{ name: 'Fable', percentage: 86 }]);
+  const { clean } = run(fixtureWithRateLimits(40), {
+    home, usage: true, config: { modelLabels: { fable: 'fb' } }
+  });
+  assert.match(clean, /fb86\b/, 'label comes from config, matched case-insensitively');
+  assert.ok(!/\bF86\b/.test(clean), 'derived initial replaced');
+});
+
+test('modelLabels applies to an already-cached entry (no wait for expiry)', () => {
+  // The cache stores the model name, not a rendered label, so a config edit takes effect
+  // on the very next render rather than after the usage cache expires.
+  const home = seedHome({ cacheAgeMs: 5000 });
+  seedScopedCache(home, [{ name: 'Fable', percentage: 86 }]);
+  assert.match(run(fixtureWithRateLimits(40), { home, usage: true }).clean, /F86\b/);
+  assert.match(
+    run(fixtureWithRateLimits(40), { home, usage: true, config: { modelLabels: { Fable: 'x' } } }).clean,
+    /x86\b/
+  );
+});
+
+test('order: segments render in the configured order', () => {
+  const config = { order: ['context', 'session', 'weekly', 'dir', 'model'], wrapAfter: null };
+  const { clean } = run(fixtureWithRateLimits(40), { usage: true, config });
+  const parts = clean.split('│').map(s => s.trim());
+  const idx = (re) => parts.findIndex(p => re.test(p));
+  assert.ok(idx(/^C\d+/) < idx(/^H\d+/), 'context first');
+  assert.ok(idx(/^H\d+/) < idx(/^W\d+/), 'session before weekly');
+  assert.ok(idx(/^W\d+/) < idx(/myproject/), 'dir moved to the end');
+});
+
+test('order: omitting a segment hides it', () => {
+  const config = { order: ['dir', 'context'], wrapAfter: null };
+  const { code, clean } = run(fixtureWithRateLimits(40), { usage: true, config });
+  assert.strictEqual(code, 0);
+  assert.match(clean, /C\d+ /, 'listed segment renders');
+  assert.ok(!/\bH24\b/.test(clean), 'unlisted session bar hidden');
+  assert.ok(!/\bW41\b/.test(clean), 'unlisted weekly bar hidden');
+  assert.ok(!clean.includes('Opus'), 'unlisted model segment hidden');
+});
+
+test('order: unknown names dropped, duplicates collapsed', () => {
+  const config = { order: ['dir', 'nonsense', 'dir', 'context'], wrapAfter: null };
+  const { clean } = run(fixtureWithRateLimits(40), { usage: true, config });
+  assert.strictEqual(clean.split('│').length, 2, 'dir + context only, dir not repeated');
+});
+
+test('order: an all-invalid order falls back to the default (never a blank line)', () => {
+  const { code, clean } = run(fixtureWithRateLimits(40), { usage: true, config: { order: ['nope', 'x'] } });
+  assert.strictEqual(code, 0);
+  assert.match(clean, /myproject/);
+  assert.match(clean, /H24\b/, 'full default order restored');
+});
+
+test('separator is configurable', () => {
+  const { clean } = run(fixtureWithRateLimits(40), { usage: true, config: { separator: ' :: ' } });
+  assert.ok(clean.includes(' :: '), 'custom separator used');
+  assert.ok(!clean.includes(' │ '), 'default separator gone');
+});
+
+test('thresholds change the usage bar colors', () => {
+  // 24% is green on the default 50/75/90 ramp. On 5/10/20 it is at or past the top
+  // threshold, so it renders red; on 10/20/30 it sits in the orange band between them.
+  const red = run(fixtureWithRateLimits(40), { usage: true, config: { thresholds: [5, 10, 20] } });
+  assert.ok(red.raw.includes(`${ESC}[31mH24`), 'H24 red once 24 >= the top threshold');
+  const orange = run(fixtureWithRateLimits(40), { usage: true, config: { thresholds: [10, 20, 30] } });
+  assert.ok(orange.raw.includes(`${ESC}[38;5;208mH24`), 'H24 orange in the band below it');
+});
+
+test('wrapAfter moves the line break', () => {
+  const { clean } = run(fixtureWithRateLimits(40), { usage: true, config: { wrapAfter: 'dir' }, columns: 40 });
+  const lines = clean.split('\n');
+  assert.strictEqual(lines.length, 2, 'still wraps to two lines');
+  assert.match(lines[0], /myproject/, 'line 1 is just the dir');
+  assert.ok(!/C\d+ /.test(lines[0]), 'context moved to line 2');
+  assert.match(lines[1], /C\d+ /);
+});
+
+test('wrapAfter: null never wraps, however narrow the terminal', () => {
+  const { clean } = run(fixtureWithRateLimits(40), { usage: true, config: { wrapAfter: null }, columns: 20 });
+  assert.ok(!clean.includes('\n'), 'single line despite a 20-column terminal');
+});
+
+test('wrapAfter naming a segment not in order means no wrap', () => {
+  const config = { order: ['dir', 'context'], wrapAfter: 'cost' };
+  const { clean } = run(fixtureWithRateLimits(40), { usage: true, config, columns: 20 });
+  assert.ok(!clean.includes('\n'), 'nowhere to break -> single line');
+});
+
+// Robustness: a bad config degrades to defaults rather than breaking the statusline.
+
+test('malformed JSON is ignored, statusline still renders', () => {
+  const { code, clean } = run(fixtureWithRateLimits(40), { usage: true, config: '{ this is not json' });
+  assert.strictEqual(code, 0);
+  assert.match(clean, /myproject/);
+  assert.match(clean, /H24\b/, 'defaults intact');
+});
+
+test('a non-object config is ignored', () => {
+  const { code, clean } = run(fixtureWithRateLimits(40), { usage: true, config: '["an","array"]' });
+  assert.strictEqual(code, 0);
+  assert.match(clean, /H24\b/);
+});
+
+test('invalid values fall back individually, valid ones still apply', () => {
+  const config = {
+    labels: { session: 'S', weekly: 'far-too-long', context: 42 },
+    thresholds: [90, 50, 10],          // not ascending
+    separator: ''                       // empty
+  };
+  const { clean, raw } = run(fixtureWithRateLimits(40), { usage: true, config });
+  assert.match(clean, /S24\b/, 'the valid label applies');
+  assert.match(clean, /W41\b/, 'over-long label rejected -> default W');
+  assert.match(clean, /C\d+ /, 'non-string label rejected -> default C');
+  assert.ok(clean.includes(' │ '), 'empty separator rejected -> default');
+  assert.ok(raw.includes(`${ESC}[32mS24`), 'bad thresholds rejected -> 24% still green');
+});
+
+test('control characters in config values are rejected (no escape injection)', () => {
+  const config = { separator: ` ${ESC}[31m `, labels: { session: `${ESC}[5mH` } };
+  const { clean } = run(fixtureWithRateLimits(40), { usage: true, config });
+  assert.ok(clean.includes(' │ '), 'separator falls back to the default');
+  assert.match(clean, /H24\b/, 'label falls back to the default');
 });

@@ -137,20 +137,66 @@ Remove-Item "$env:USERPROFILE\.claude\cache\usage-cache.json" -ErrorAction Silen
 > Usage bars change color automatically as you approach your limits.
 
 > [!NOTE]
-> **Responsive.** On a narrow terminal the line wraps to two — directory, model, and context on the first line; usage, cost, and task on the second. Wide terminals stay on a single line. (Auto-sizing needs Claude Code v2.1.153+.)
+> **Responsive.** On a narrow terminal the line wraps to two — directory, model, and context on the first line; usage, cost, and task on the second. Wide terminals stay on a single line. The break point is configurable (`wrapAfter`). (Auto-sizing needs Claude Code v2.1.153+.)
 
 > [!TIP]
-> Don't want every segment? You can hide any of them — see [Configuration](#configuration).
+> Don't want every segment? Hide, reorder, or relabel any of them — see [Configuration](#configuration).
 
 ## Configuration
 
-The statusline is zero-config by default. To **hide segments you don't want**, set the `CTXLINE_DISABLE` environment variable to a comma-separated list of any of:
+The statusline is zero-config by default — everything below is optional.
+
+### Config file — `~/.claude/ctxline.json`
+
+Create it to customise labels, segment order, colors, and the separator. Every key is
+optional, and the file is only read if it exists. Set `CTXLINE_CONFIG` to use a different path.
+
+```jsonc
+{
+  // Bar labels. 1–4 printable characters each.
+  "labels": { "session": "S", "weekly": "W", "context": "C" },
+
+  // Relabel a model-scoped bar by model name (case-insensitive).
+  // Default is the model's initial, so "Fable" -> F.
+  "modelLabels": { "Fable": "f" },
+
+  // Which segments render, and in what order. Omit one to hide it.
+  // `dir` includes the git branch; `model` includes the effort suffix;
+  // `scoped` covers every model-scoped weekly limit.
+  "order": ["dir", "model", "context", "session", "weekly", "scoped", "cost", "task"],
+
+  // On a narrow terminal the line breaks after this segment. null = never wrap.
+  "wrapAfter": "context",
+
+  "separator": " │ ",
+
+  // Usage bar colors: green below the first, then yellow, orange, red.
+  "thresholds": [50, 75, 90]
+}
+```
+
+Comments aren't valid JSON — they're shown here for clarity only.
+
+**Failure behaviour.** A config mistake can't break the statusline. An unreadable or
+malformed file is ignored entirely, and each key is validated on its own: one bad value
+falls back to its own default while the rest of the file still applies. An `order`
+containing only unknown names falls back to the full default rather than rendering a blank
+line, and control characters are rejected in labels and separators so a config file can't
+inject terminal escapes.
+
+Two things worth knowing: `wrapAfter` must name a segment that's present in `order`,
+otherwise there's nowhere to break and the line never wraps. And changes take effect on the
+next render — no restart needed.
+
+### Hiding segments — `CTXLINE_DISABLE`
+
+To **hide segments** without writing a config file, set the `CTXLINE_DISABLE` environment variable to a comma-separated list of any of:
 
 `branch` · `effort` · `cost` · `task` · `usage` (5-hour + weekly + model-scoped)
 
-Directory, model, and context always show; unknown names are ignored. Example below hides cost and the current task.
+Unknown names are ignored. The example below hides cost and the current task. (`order` in the config file can hide any segment, including directory, model, and context.)
 
-### Option A — `settings.json` (recommended)
+#### Option A — `settings.json` (recommended)
 
 Works on every OS and survives restarts. Add a top-level `env` block to `~/.claude/settings.json` — Claude Code passes it to every command it spawns, including the statusline:
 
@@ -168,7 +214,7 @@ Works on every OS and survives restarts. Add a top-level `env` block to `~/.clau
 
 Restart Claude Code (or start a new session) to apply.
 
-### Option B — shell environment
+#### Option B — shell environment
 
 Set the variable **before** launching `claude` (the statusline inherits Claude Code's environment):
 
