@@ -902,6 +902,138 @@ test('compact: unknown width keeps full detail (nothing to measure against)', ()
   assert.match(clean, /█|░/);
 });
 
+// `dedupeResets`: a scoped weekly limit usually shares the account weekly reset, so
+// repeating the same countdown twice on one line is noise.
+
+test('dedupeResets hides a scoped countdown identical to the weekly one', () => {
+  const home = seedHome({ cacheAgeMs: 5000 });
+  // seedHome's weekly and seedScopedCache both sit 62h out -> identical countdowns.
+  seedScopedCache(home, [{ name: 'Fable', percentage: 86 }]);
+  const { clean } = run(fixture(40), { home, usage: true, config: { dedupeResets: true } });
+  assert.match(clean, /W31 ↺ 2d\d{1,2}h/, 'weekly keeps its countdown');
+  assert.match(clean, /F86\b/, 'scoped bar still renders');
+  assert.ok(!/F86 ↺/.test(clean), 'scoped countdown suppressed as a duplicate');
+  assert.strictEqual((clean.match(/↺/g) || []).length, 2, 'only session + weekly show a reset');
+});
+
+test('dedupeResets keeps a scoped countdown that differs from the weekly one', () => {
+  const home = seedHome({ cacheAgeMs: 5000 });
+  const cacheFile = path.join(home, '.claude', 'cache', 'usage-cache.json');
+  const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  // 20h out vs the weekly's 62h -> different rendered countdown, so it must stay visible.
+  cache.data.models = [{
+    name: 'Fable', percentage: 86,
+    resetsAt: new Date(Date.now() + 20 * 3600 * 1000).toISOString()
+  }];
+  fs.writeFileSync(cacheFile, JSON.stringify(cache));
+  const { clean } = run(fixture(40), { home, usage: true, config: { dedupeResets: true } });
+  assert.match(clean, /F86 ↺ \d{1,2}h/, 'a genuinely different reset is still shown');
+});
+
+test('dedupeResets off (default): the scoped countdown always renders', () => {
+  const home = seedHome({ cacheAgeMs: 5000 });
+  seedScopedCache(home, [{ name: 'Fable', percentage: 86 }]);
+  const { clean } = run(fixture(40), { home, usage: true });
+  assert.match(clean, /F86 ↺ 2d\d{1,2}h/, 'duplicate countdown kept when not opted in');
+});
+
+test('dedupeResets with no weekly bar leaves the scoped countdown alone', () => {
+  // Nothing to compare against -> the scoped reset is the only one, so it must show.
+  const home = seedHome({ cacheAgeMs: 5000 });
+  const cacheFile = path.join(home, '.claude', 'cache', 'usage-cache.json');
+  const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  delete cache.data.weekly;
+  cache.data.models = [{
+    name: 'Fable', percentage: 86,
+    resetsAt: new Date(Date.now() + 62 * 3600 * 1000).toISOString()
+  }];
+  fs.writeFileSync(cacheFile, JSON.stringify(cache));
+  const { clean } = run(fixture(40), { home, usage: true, config: { dedupeResets: true } });
+  assert.match(clean, /F86 ↺ 2d\d{1,2}h/);
+});
+
+// `widthMargin`: hold back columns the host UI occupies, so the line is measured against
+// the space it actually gets rather than the raw terminal width.
+
+test('widthMargin makes a line that would just fit wrap instead', () => {
+  const wide = run(fixtureWithRateLimits(40), { usage: true, columns: 64 });
+  assert.ok(!wide.clean.includes('\n'), 'fits at 64 columns with no margin');
+
+  const withMargin = run(fixtureWithRateLimits(40), {
+    usage: true, columns: 64, config: { widthMargin: 12 }
+  });
+  assert.ok(withMargin.clean.includes('\n'), 'same width, 12 columns held back -> wraps');
+});
+
+test('widthMargin feeds the compact ladder too', () => {
+  // The full line with an effort suffix is ~69 cells, so 75 leaves room for it.
+  const noMargin = run(fixtureWithRateLimits(40, { effort: 'high' }), {
+    usage: true, columns: 75, config: { compact: true }
+  });
+  assert.match(noMargin.clean, /↺/, 'full detail fits at 75');
+
+  const margin = run(fixtureWithRateLimits(40, { effort: 'high' }), {
+    usage: true, columns: 75, config: { compact: true, widthMargin: 12 }
+  });
+  assert.ok(!margin.clean.includes('↺'), 'held-back columns push it down a detail level');
+});
+
+test('widthMargin rejects non-integer and out-of-range values', () => {
+  for (const bad of [{ widthMargin: 3.5 }, { widthMargin: -1 }, { widthMargin: 999 }, { widthMargin: '6' }]) {
+    const { clean } = run(fixtureWithRateLimits(40), { usage: true, columns: 64, config: bad });
+    assert.ok(!clean.includes('\n'), `widthMargin ${JSON.stringify(bad)} ignored -> default 0`);
+  }
+});
+
+// Backoff: a failed usage fetch must suppress the next attempt. Without it, a missing
+// cache means every render retries, and a rate-limited endpoint stays rate-limited
+// because the retries are the load.
+
+function writeBackoff(home, msFromNow) {
+  fs.writeFileSync(
+    path.join(home, '.claude', 'cache', 'usage-backoff.json'),
+    JSON.stringify({ until: Date.now() + msFromNow })
+  );
+}
+
+test('an active backoff serves the cache even past the stale TTL', () => {
+  // 20 min old: normally too stale to show. With a backoff active, showing it beats
+  // spending a request and rendering nothing.
+  const home = seedHome({ cacheAgeMs: 20 * 60 * 1000, percentage: 57, weeklyPercentage: 31 });
+  const expired = run(fixture(40), { home, usage: true });
+  assert.ok(!expired.clean.includes('H57'), 'without backoff, an expired cache is dropped');
+
+  writeBackoff(home, 60 * 1000);
+  const backedOff = run(fixture(40), { home, usage: true });
+  assert.match(backedOff.clean, /H57\b/, 'with backoff, the last known value is shown');
+});
+
+test('an expired backoff does not suppress anything', () => {
+  const home = seedHome({ cacheAgeMs: 20 * 60 * 1000, percentage: 57 });
+  writeBackoff(home, -60 * 1000);         // already elapsed
+  const { code, clean } = run(fixture(40), { home, usage: true });
+  assert.strictEqual(code, 0);
+  assert.ok(!clean.includes('H57'), 'expired backoff -> normal expiry rules apply again');
+});
+
+test('a corrupt backoff file is ignored, not fatal', () => {
+  const home = seedHome({ cacheAgeMs: 5000, percentage: 42 });
+  fs.writeFileSync(path.join(home, '.claude', 'cache', 'usage-backoff.json'), 'not json');
+  const { code, clean } = run(fixture(40), { home, usage: true });
+  assert.strictEqual(code, 0);
+  assert.match(clean, /H42\b/, 'fresh cache still renders');
+});
+
+test('backoff with no cache at all still renders the rest of the line', () => {
+  const home = seedHome({});              // credentials file, no usage cache
+  fs.mkdirSync(path.join(home, '.claude', 'cache'), { recursive: true });
+  writeBackoff(home, 60 * 1000);
+  const { code, clean } = run(fixture(40), { home, usage: true });
+  assert.strictEqual(code, 0);
+  assert.match(clean, /C\d+ /, 'context still renders with no usage data available');
+  assert.ok(!clean.includes('↺'), 'and no usage bars');
+});
+
 test('separator is configurable', () => {
   const { clean } = run(fixtureWithRateLimits(40), { usage: true, config: { separator: ' :: ' } });
   assert.ok(clean.includes(' :: '), 'custom separator used');

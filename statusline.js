@@ -41,6 +41,8 @@ const DEFAULT_CONFIG = {
   wrapAfter: 'context',            // line breaks after this segment when too wide; null = never
   hideContextSize: false,          // true -> "Opus 5 (1M)" renders as "Opus 5"
   compact: false,                  // true -> abbreviate progressively before wrapping
+  dedupeResets: false,             // true -> hide a scoped countdown identical to weekly's
+  widthMargin: 0,                  // columns to hold back from COLUMNS (host UI padding)
   separator: ' │ ',
   thresholds: [50, 75, 90]         // usage colors: green <50, yellow <75, orange <90, else red
 };
@@ -103,6 +105,10 @@ function loadConfig() {
 
   if (typeof raw.hideContextSize === 'boolean') cfg.hideContextSize = raw.hideContextSize;
   if (typeof raw.compact === 'boolean') cfg.compact = raw.compact;
+  if (typeof raw.dedupeResets === 'boolean') cfg.dedupeResets = raw.dedupeResets;
+  if (Number.isInteger(raw.widthMargin) && raw.widthMargin >= 0 && raw.widthMargin <= 40) {
+    cfg.widthMargin = raw.widthMargin;
+  }
 
   if (typeof raw.separator === 'string' && raw.separator.length > 0 && !/[\x00-\x1f\x7f]/.test(raw.separator)) {
     cfg.separator = raw.separator;
@@ -136,10 +142,11 @@ const MAX_BRANCH_LEN = 24;
 // Separator between segments on a rendered line (config: `separator`).
 const SEGMENT_SEP = CONFIG.separator;
 
-// Cells reserved at the terminal edge when deciding to wrap to a second line.
-// 0 = use the full COLUMNS; bump it if Claude Code reserves columns and the line
-// truncates a char or two before wrapping.
-const WIDTH_MARGIN = 0;
+// Cells reserved at the terminal edge when deciding to wrap or abbreviate (config:
+// `widthMargin`). COLUMNS is the terminal width, but the host draws the statusline inside
+// its own padding, so the usable width is smaller — without a margin the line measures as
+// fitting and the terminal then clips it with an ellipsis. 0 = trust COLUMNS exactly.
+const WIDTH_MARGIN = CONFIG.widthMargin;
 
 // Cache configuration
 const CACHE_DIR = path.join(os.homedir(), '.claude', 'cache');
@@ -149,6 +156,14 @@ const FRESH_TTL_MS = 30000;            // 30 seconds
 // Stale: used only as a fallback when a live API call fails, so the usage bar stays
 // visible through transient timeouts/errors instead of disappearing.
 const STALE_TTL_MS = 10 * 60 * 1000;   // 10 minutes
+
+// Backoff after a failed usage fetch. Without this a missing cache means every render
+// retries: failures aren't cached, so nothing suppresses the next attempt. A rate-limited
+// endpoint then stays rate-limited, because the retries are themselves the load. The
+// window is longer for an explicit 429 than for a timeout or transient error.
+const BACKOFF_FILE = path.join(CACHE_DIR, 'usage-backoff.json');
+const BACKOFF_MS = 60 * 1000;                  // generic failure: try again in a minute
+const RATE_LIMIT_BACKOFF_MS = 5 * 60 * 1000;   // HTTP 429: back well off
 
 // Git ahead/behind cache (single repo entry, keyed by git dir). Throttles the one
 // `git rev-list` subprocess so a burst of renders in a turn runs it once, not per render.
@@ -335,21 +350,23 @@ function getContextBar(remaining, { showBar = true } = {}) {
   return `${color}${CONFIG.labels.context}${used}${barPart}${colors.reset}`;
 }
 
-// Render a compact usage segment from raw data: "<label><pct> ↺ <countdown>"
-// (e.g. "H81 ↺ 2h21m") — no bar. Called on every read (live or cached) so the reset
-// countdown is always recomputed from resetsAt rather than frozen at fetch time.
-function buildUsageBar(label, percentage, resetsAt) {
-  let timeStr = '';
-  if (resetsAt) {
-    const diffMins = Math.max(0, Math.floor((new Date(resetsAt) - new Date()) / 60000));
-    const days = Math.floor(diffMins / 1440);
-    const hours = Math.floor((diffMins % 1440) / 60);
-    const mins = diffMins % 60;
-    if (days > 0) timeStr = `${days}d${hours}h`;
-    else if (hours > 0) timeStr = `${hours}h${mins}m`;
-    else timeStr = `${mins}m`;
-  }
+// Time until `resetsAt` as "2d13h" / "2h21m" / "44m", or '' when absent. Recomputed on
+// every render (live or cached) rather than frozen at fetch time.
+function formatCountdown(resetsAt) {
+  if (!resetsAt) return '';
+  const diffMins = Math.max(0, Math.floor((new Date(resetsAt) - new Date()) / 60000));
+  const days = Math.floor(diffMins / 1440);
+  const hours = Math.floor((diffMins % 1440) / 60);
+  const mins = diffMins % 60;
+  if (days > 0) return `${days}d${hours}h`;
+  if (hours > 0) return `${hours}h${mins}m`;
+  return `${mins}m`;
+}
 
+// Render a compact usage segment from raw data: "<label><pct> ↺ <countdown>"
+// (e.g. "H81 ↺ 2h21m") — no bar.
+function buildUsageBar(label, percentage, resetsAt) {
+  const timeStr = formatCountdown(resetsAt);
   const color = getUsageColor(percentage);
   const timePart = timeStr ? `${colors.dim} ↺ ${timeStr}${colors.reset}` : '';
 
@@ -393,10 +410,22 @@ function scopedLabel(entry) {
 // terminal is narrow — the percentage is what you glance at, the reset time rarely.
 function buildUsageBars(fiveHour, weekly, models, { showCountdown = true } = {}) {
   const at = (e) => (showCountdown ? e.resetsAt : null);
+
+  // With `dedupeResets`, a scoped bar whose countdown reads the same as the weekly one
+  // drops it — a model-scoped weekly limit usually shares the account weekly reset, so
+  // repeating it is noise. Compared as rendered text, so if the two ever diverge (even by
+  // enough to change the displayed value) the countdown comes back on its own.
+  const weeklyCountdown = weekly ? formatCountdown(at(weekly)) : '';
+  const scopedAt = (m) => {
+    const when = at(m);
+    if (!CONFIG.dedupeResets || !weeklyCountdown) return when;
+    return formatCountdown(when) === weeklyCountdown ? null : when;
+  };
+
   return {
     current: fiveHour ? buildUsageBar(CONFIG.labels.session, fiveHour.percentage, at(fiveHour)) : null,
     weekly: weekly ? buildUsageBar(CONFIG.labels.weekly, weekly.percentage, at(weekly)) : null,
-    models: (models || []).map(m => buildUsageBar(scopedLabel(m), m.percentage, at(m)))
+    models: (models || []).map(m => buildUsageBar(scopedLabel(m), m.percentage, scopedAt(m)))
   };
 }
 
@@ -523,6 +552,29 @@ function setCachedUsage(data) {
   }
 }
 
+// Epoch ms until which the usage API should not be called, or 0 when clear.
+function readBackoffUntil() {
+  try {
+    const b = JSON.parse(fs.readFileSync(BACKOFF_FILE, 'utf8'));
+    return Number.isFinite(b?.until) ? b.until : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function setBackoff(ms) {
+  try {
+    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+    fs.writeFileSync(BACKOFF_FILE, JSON.stringify({ until: Date.now() + ms }), 'utf8');
+  } catch (e) {}
+}
+
+function clearBackoff() {
+  try {
+    if (fs.existsSync(BACKOFF_FILE)) fs.unlinkSync(BACKOFF_FILE);
+  } catch (e) {}
+}
+
 function getCredentials() {
   // Try file first (legacy / Linux / Windows)
   const credsPath = path.join(os.homedir(), '.claude', '.credentials.json');
@@ -576,6 +628,14 @@ function getApiUsage(callback) {
     }, (res) => {
       let data = '';
 
+      // A non-200 carries no usage payload — record a backoff so the next render doesn't
+      // immediately retry, and drain the response so the socket can close.
+      if (res.statusCode !== 200) {
+        setBackoff(res.statusCode === 429 ? RATE_LIMIT_BACKOFF_MS : BACKOFF_MS);
+        res.resume();
+        return callback(null);
+      }
+
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
@@ -602,19 +662,23 @@ function getApiUsage(callback) {
             // Cache the raw data (shared across sessions); callers render from it.
             const resolved = { fiveHour, weekly, models };
             setCachedUsage(resolved);
+            clearBackoff();
             callback(resolved);
           } else {
+            setBackoff(BACKOFF_MS);
             callback(null);
           }
         } catch (e) {
+          setBackoff(BACKOFF_MS);
           callback(null);
         }
       });
     });
 
-    req.on('error', () => callback(null));
+    req.on('error', () => { setBackoff(BACKOFF_MS); callback(null); });
     req.on('timeout', () => {
       req.destroy();
+      setBackoff(BACKOFF_MS);
       callback(null);
     });
 
@@ -631,6 +695,13 @@ function getRawUsage(callback) {
   // Cache is fresh -> use it and skip the API entirely (fewer calls, faster).
   if (cached && cached.age < FRESH_TTL_MS) {
     return callback(cached.data);
+  }
+
+  // Backing off after a recent failure -> don't spend a request. Fall back to whatever
+  // the cache still holds, even past STALE_TTL: a stale number beats a vanished bar, and
+  // retrying here is what keeps a rate limit alive in the first place.
+  if (Date.now() < readBackoffUntil()) {
+    return callback(cached ? cached.data : null);
   }
 
   // Cache is stale or missing -> refresh from the API.

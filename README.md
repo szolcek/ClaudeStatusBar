@@ -175,6 +175,14 @@ optional, and the file is only read if it exists. Set `CTXLINE_CONFIG` to use a 
   // Shed detail as the terminal narrows, instead of wrapping straight away.
   "compact": false,
 
+  // Hide a model-scoped countdown when it reads the same as the weekly one.
+  "dedupeResets": false,
+
+  // Columns to hold back from COLUMNS. The host draws the statusline inside its
+  // own padding, so the usable width is smaller than the terminal width; without
+  // this the line measures as fitting and then gets clipped with an ellipsis.
+  "widthMargin": 0,
+
   "separator": " │ ",
 
   // Usage bar colors: green below the first, then yellow, orange, red.
@@ -269,6 +277,7 @@ To re-enable a segment, remove it from the list (or delete the variable) and res
 - **No network on the fast path** — when `rate_limits` is in the session data, there's no API call at all. The fetch below only runs as a fallback (e.g. the first render of a session, before the field appears).
 - **Adaptive timing** — for the fallback fetch: 1.5s timeout on the first prompt (cold start), 1.2s after (connection reused).
 - **Caching** — the fallback fetch is cached at `~/.claude/cache/usage-cache.json`, shared across sessions. Within 30s the cache renders directly (the API call is skipped); if a live call fails, the last value (up to 10 min old) is shown so the bar never vanishes. The reset countdown recomputes every render.
+- **Backoff** — a failed usage fetch is remembered (`~/.claude/cache/usage-backoff.json`): 1 minute for a timeout or transient error, 5 minutes for an HTTP 429. During a backoff no request is made and the last cached value is shown even past its normal expiry. Without this a missing cache means every render retries, and a rate-limited endpoint stays rate-limited because the retries are themselves the load.
 - **Never breaks** — every failure path falls back silently; the statusline always prints.
 
 ## FAQ
