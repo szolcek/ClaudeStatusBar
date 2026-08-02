@@ -13,7 +13,7 @@ const { execSync, execFileSync } = require('child_process');
 const IS_API_KEY = !!process.env.ANTHROPIC_API_KEY;
 
 // Optional segment opt-out: CTXLINE_DISABLE is a comma list of segments to hide.
-// Recognized: branch, effort, cost, task, usage (H+W+model-scoped). dir/model/context always render.
+// Recognized: branch, effort, cost, task, usage (S+W+model-scoped). dir/model/context always render.
 // Unknown names are ignored. Disabling a segment also skips its work (git, todo read,
 // usage fetch).
 const DISABLED = new Set(
@@ -265,7 +265,9 @@ const LEGACY_MODEL_WEEKLY_KEYS = [
 // (possibly empty) array of rendered strings.
 function buildUsageBars(fiveHour, weekly, models) {
   return {
-    current: fiveHour ? buildUsageBar('H', fiveHour.percentage, fiveHour.resetsAt) : null,
+    // 'S' for session (the 5-hour window), pairing with 'W' for weekly. Note this shares a
+    // letter with a Sonnet-scoped weekly bar, which also labels by the model's initial.
+    current: fiveHour ? buildUsageBar('S', fiveHour.percentage, fiveHour.resetsAt) : null,
     weekly: weekly ? buildUsageBar('W', weekly.percentage, weekly.resetsAt) : null,
     models: (models || []).map(m => buildUsageBar(m.label, m.percentage, m.resetsAt))
   };
@@ -526,7 +528,7 @@ function getUsageWithCache(callback) {
   });
 }
 
-// Model-scoped weekly limits only, cache-first. Used alongside the stdin H/W bars, which
+// Model-scoped weekly limits only, cache-first. Used alongside the stdin S/W bars, which
 // can't carry them. Falls back to the stale cache and finally to [] so a failed or slow
 // call costs the scoped bars but never the bars stdin already gave us.
 function getScopedModels(callback) {

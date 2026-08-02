@@ -360,7 +360,7 @@ test('fresh cache -> current + weekly rendered from cache (no API call)', () => 
   const home = seedHome({ cacheAgeMs: 5000, percentage: 42, weeklyPercentage: 31 }); // < FRESH_TTL (30s)
   const { code, clean } = run(fixture(40), { home, usage: true });
   assert.strictEqual(code, 0);
-  assert.match(clean, /H42\b/);
+  assert.match(clean, /S42\b/);
   assert.match(clean, /W31\b/);
   assert.match(clean, /W31 ↺ 2d\d{1,2}h/);                    // day-aware reset countdown (Xd Yh)
 });
@@ -368,7 +368,7 @@ test('fresh cache -> current + weekly rendered from cache (no API call)', () => 
 test('stale cache + failing API -> usage stays visible (does not disappear)', () => {
   const home = seedHome({ cacheAgeMs: 2 * 60 * 1000, percentage: 57 }); // > FRESH, < STALE
   const { clean } = run(fixture(40), { home, usage: true });
-  assert.match(clean, /H57\b/);
+  assert.match(clean, /S57\b/);
 });
 
 test('expired cache + failing API -> usage omitted', () => {
@@ -377,7 +377,7 @@ test('expired cache + failing API -> usage omitted', () => {
   assert.strictEqual(code, 0);                                  // ran successfully
   assert.match(clean, /C\d+ /, 'expected the normal line to still render');
   assert.ok(!clean.includes('↺'), 'usage (and its reset glyph) should be omitted once cache is too old');
-  assert.ok(!clean.includes('H57'), 'current usage should be omitted once cache is too old');
+  assert.ok(!clean.includes('S57'), 'current usage should be omitted once cache is too old');
 });
 
 // Usage from stdin `rate_limits`: the network/cache path is bypassed entirely.
@@ -387,7 +387,7 @@ test('stdin rate_limits -> 5h/7d render with no cache and no creds', () => {
   // can render is straight from stdin rate_limits (proves the API/cache path is skipped).
   const { code, clean } = run(fixtureWithRateLimits(40), { usage: true });
   assert.strictEqual(code, 0);
-  assert.match(clean, /H24\b/);                                 // 23.5 -> 24 (fractional, rounded)
+  assert.match(clean, /S24\b/);                                 // 23.5 -> 24 (fractional, rounded)
   assert.match(clean, /W41\b/);                                 // 41.2 -> 41
   assert.match(clean, /W41 ↺ 2d\d{1,2}h/);                      // epoch-seconds -> day-aware countdown
 });
@@ -470,21 +470,21 @@ test('parseScopedLimits does not double-count when both shapes are present', () 
 test('no scoped limits -> nothing extra renders', () => {
   assert.deepStrictEqual(parseScopedLimits({ five_hour: { utilization: 43 } }), []);
   const { clean } = run(fixtureWithRateLimits(40), { usage: true });
-  assert.match(clean, /H24\b/);
+  assert.match(clean, /S24\b/);
   assert.match(clean, /W41\b/);
   assert.ok(!/\bF\d+/.test(clean), 'no F bar when the account reports no scoped limit');
 });
 
 // Rendering: scoped bars come from the cache, including on the stdin fast path.
 
-test('scoped bar renders alongside the stdin H/W bars', () => {
-  // The crux of the feature: stdin supplies H/W (no network), the scoped limit comes from
+test('scoped bar renders alongside the stdin S/W bars', () => {
+  // The crux of the feature: stdin supplies S/W (no network), the scoped limit comes from
   // the cache. Before this, a scoped limit could never reach the screen in a live session.
   const home = seedHome({ cacheAgeMs: 5000 });
   seedScopedCache(home, [{ label: 'F', percentage: 86 }]);
   const { code, clean } = run(fixtureWithRateLimits(40), { home, usage: true });
   assert.strictEqual(code, 0);
-  assert.match(clean, /H24\b/, 'H still comes from stdin, not the cache');
+  assert.match(clean, /S24\b/, 'S still comes from stdin, not the cache');
   assert.match(clean, /W41\b/, 'W still comes from stdin');
   assert.match(clean, /F86\b/, 'scoped bar comes from the cache');
 });
@@ -504,15 +504,15 @@ test('CTXLINE_DISABLE=usage also hides the scoped bars', () => {
   seedScopedCache(home, [{ label: 'F', percentage: 86 }]);
   const { clean } = run(fixtureWithRateLimits(40), { home, usage: true, disable: 'usage' });
   assert.ok(!/\bF\d+/.test(clean), 'scoped bar is part of the usage segment');
-  assert.ok(!clean.includes('H24'), 'H bar hidden too');
+  assert.ok(!clean.includes('S24'), 'S bar hidden too');
 });
 
 test('a cache written before scoped bars existed stays valid', () => {
-  // No `models` key at all — must be accepted (H/W render, no scoped bars) rather than
+  // No `models` key at all — must be accepted (S/W render, no scoped bars) rather than
   // rejected as malformed, which would force a refetch for everyone on upgrade.
   const home = seedHome({ cacheAgeMs: 5000, percentage: 42, weeklyPercentage: 31 });
   const { clean } = run(fixture(40), { home, usage: true });
-  assert.match(clean, /H42\b/, 'legacy cache without models is still readable');
+  assert.match(clean, /S42\b/, 'legacy cache without models is still readable');
   assert.match(clean, /W31\b/);
   assert.ok(!/\bF\d+/.test(clean));
 });
@@ -521,8 +521,8 @@ test('stdin rate_limits takes precedence over a fresh cache', () => {
   // Fresh cache says 42% / 31%; stdin says 23.5% / 41.2%. stdin must win (cache not read).
   const home = seedHome({ cacheAgeMs: 5000, percentage: 42, weeklyPercentage: 31 });
   const { clean } = run(fixtureWithRateLimits(40), { home, usage: true });
-  assert.match(clean, /H24\b/);
-  assert.ok(!clean.includes('H42'), 'cached 5h value must not appear when stdin rate_limits is present');
+  assert.match(clean, /S24\b/);
+  assert.ok(!clean.includes('S42'), 'cached 5h value must not appear when stdin rate_limits is present');
 });
 
 // Responsive layout: usage/cost/task wrap to a second line only when the rendered line
@@ -535,14 +535,14 @@ test('narrow terminal wraps usage to a second line (line1 identity+context, line
   const [l1, l2] = clean.split('\n');
   assert.match(l1, /C\d+ /, 'context stays on line 1');
   assert.ok(!/[HW]\d+/.test(l1), 'usage must not be on line 1 when wrapped');
-  assert.match(l2, /H\d+\b/, 'current usage moves to line 2');
+  assert.match(l2, /S\d+\b/, 'current usage moves to line 2');
   assert.match(l2, /W\d+\b/, 'weekly usage moves to line 2');
 });
 
 test('wide terminal keeps everything on one line', () => {
   const { raw, clean } = run(fixtureWithRateLimits(40), { usage: true, columns: 200 });
   assert.ok(!raw.includes('\n'), 'no wrap when the line fits');
-  assert.match(clean, /C\d+ .*H\d+\b.*W\d+\b/, 'context + usage all on one line');
+  assert.match(clean, /C\d+ .*S\d+\b.*W\d+\b/, 'context + usage all on one line');
 });
 
 test('unknown width (COLUMNS unset) never wraps', () => {
@@ -673,10 +673,10 @@ test('disable=branch hides the branch (and ahead/behind) glyph', () => {
   assert.ok(!clean.includes('⎇'), 'branch segment hidden');
 });
 
-test('disable=usage hides H/W', () => {
+test('disable=usage hides S/W', () => {
   const home = seedHome({ cacheAgeMs: 5000, percentage: 42, weeklyPercentage: 31 });
   const { clean } = run(fixture(40), { home, usage: true, disable: 'usage' });
-  assert.ok(!clean.includes('H42') && !clean.includes('W31'), 'usage segments hidden');
+  assert.ok(!clean.includes('S42') && !clean.includes('W31'), 'usage segments hidden');
   assert.ok(!clean.includes('↺'), 'no reset countdown');
   assert.match(clean, /C\d+ /, 'context still renders');
 });
