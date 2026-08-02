@@ -793,6 +793,37 @@ test('order: an all-invalid order falls back to the default (never a blank line)
   assert.match(clean, /H24\b/, 'full default order restored');
 });
 
+test('hideContextSize drops the context size from the model name', () => {
+  const on = { hideContextSize: true };
+  assert.strictEqual(
+    run(fixture(40, '/tmp/p', 'Opus 5 (1M context)'), { config: on }).clean.split(' │ ')[1],
+    'Opus 5'
+  );
+  assert.strictEqual(
+    run(fixture(40, '/tmp/p', 'Sonnet 5 (200k)'), { config: on }).clean.split(' │ ')[1],
+    'Sonnet 5'
+  );
+  // Default keeps the size, just de-verbosed.
+  assert.strictEqual(
+    run(fixture(40, '/tmp/p', 'Opus 5 (1M context)')).clean.split(' │ ')[1],
+    'Opus 5 (1M)'
+  );
+});
+
+test('hideContextSize only strips a size, not any parenthetical', () => {
+  const config = { hideContextSize: true };
+  assert.strictEqual(
+    run(fixture(40, '/tmp/p', 'Opus 5 (preview)'), { config }).clean.split(' │ ')[1],
+    'Opus 5 (preview)',
+    'a non-size parenthetical is left alone'
+  );
+  assert.strictEqual(
+    run(fixture(40, '/tmp/p', 'Opus 5'), { config }).clean.split(' │ ')[1],
+    'Opus 5',
+    'a name with no parenthetical is untouched'
+  );
+});
+
 test('separator is configurable', () => {
   const { clean } = run(fixtureWithRateLimits(40), { usage: true, config: { separator: ' :: ' } });
   assert.ok(clean.includes(' :: '), 'custom separator used');

@@ -168,6 +168,10 @@ optional, and the file is only read if it exists. Set `CTXLINE_CONFIG` to use a 
   // On a narrow terminal the line breaks after this segment. null = never wrap.
   "wrapAfter": "context",
 
+  // Drop the context size from the model name: "Opus 5 (1M)" -> "Opus 5".
+  // Only a size is stripped; any other parenthetical is left alone.
+  "hideContextSize": false,
+
   "separator": " │ ",
 
   // Usage bar colors: green below the first, then yellow, orange, red.

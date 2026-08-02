@@ -39,6 +39,7 @@ const DEFAULT_CONFIG = {
   modelLabels: {},                 // { "<model display name>": "<label>" }, case-insensitive
   order: SEGMENT_NAMES.slice(),
   wrapAfter: 'context',            // line breaks after this segment when too wide; null = never
+  hideContextSize: false,          // true -> "Opus 5 (1M)" renders as "Opus 5"
   separator: ' │ ',
   thresholds: [50, 75, 90]         // usage colors: green <50, yellow <75, orange <90, else red
 };
@@ -98,6 +99,8 @@ function loadConfig() {
   if (raw.wrapAfter === null) cfg.wrapAfter = null;
   else if (typeof raw.wrapAfter === 'string' && SEGMENT_NAMES.includes(raw.wrapAfter)) cfg.wrapAfter = raw.wrapAfter;
   if (!cfg.order.includes(cfg.wrapAfter)) cfg.wrapAfter = null;
+
+  if (typeof raw.hideContextSize === 'boolean') cfg.hideContextSize = raw.hideContextSize;
 
   if (typeof raw.separator === 'string' && raw.separator.length > 0 && !/[\x00-\x1f\x7f]/.test(raw.separator)) {
     cfg.separator = raw.separator;
@@ -179,8 +182,12 @@ function getUsageColor(percentage) {
 }
 
 // Shorten verbose model names for the statusline: "Opus 4.8 (1M context)" -> "Opus 4.8 (1M)".
+// With config `hideContextSize`, drop the size entirely -> "Opus 4.8". The pattern is
+// deliberately narrow (a size like 1M/200k, optionally followed by "context") so a model
+// name that carries some other parenthetical keeps it.
 function shortenModel(name) {
-  return name.replace(/\s+context\)/i, ')');
+  const short = name.replace(/\s+context\)/i, ')');
+  return CONFIG.hideContextSize ? short.replace(/\s*\(\d+\s*[km]\)\s*$/i, '') : short;
 }
 
 // Tail-truncate an over-long branch name, preserving the leading ticket ID.
