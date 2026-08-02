@@ -1,26 +1,22 @@
-<h1 align="center">Claude Code Statusline</h1>
+<h1 align="center">ClaudeStatusBar</h1>
 
 <p align="center">
   A lightweight, zero-config statusline for Claude Code.
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/ctxline-claude">
-    <img src="https://img.shields.io/npm/v/ctxline-claude" alt="npm version">
-  </a>
-  <a href="https://www.npmjs.com/package/ctxline-claude">
-    <img src="https://img.shields.io/npm/dm/ctxline-claude" alt="npm downloads">
-  </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/MithunWijayasiri/ctxline-claude" alt="license">
-  </a>
-  <a href="https://github.com/MithunWijayasiri/ctxline-claude/stargazers">
-    <img src="https://img.shields.io/github/stars/MithunWijayasiri/ctxline-claude" alt="stars">
+    <img src="https://img.shields.io/github/license/szolcek/ClaudeStatusBar" alt="license">
   </a>
 </p>
 
+> **Personal fork** of [ctxline-claude](https://github.com/MithunWijayasiri/ctxline-claude) by
+> [Mithun Wijayasiri](https://github.com/MithunWijayasiri) — MIT licensed, original notice preserved
+> in [LICENSE](LICENSE). Customised for my own setup and **not published to npm**; install from
+> source. Upstream fixes get merged in periodically, and generic fixes go back upstream as PRs.
+
 <p align="center">
-  <img src="preview.svg" alt="Claude Code Statusline">
+  <img src="preview.svg" alt="ClaudeStatusBar">
 </p>
 
 <p align="center">
@@ -41,27 +37,36 @@ See your **current directory**, **active model**, **context window usage**, and 
 ## Install
 
 ```bash
-npx ctxline-claude     # or: bunx ctxline-claude
-```
-
-Then restart Claude Code or start a new session. That's it.
-
-<details>
-<summary>Other install methods</summary>
-
-**Clone & run the installer:**
-
-```bash
-git clone https://github.com/MithunWijayasiri/ctxline-claude.git
-cd ctxline-claude
+git clone https://github.com/szolcek/ClaudeStatusBar.git
+cd ClaudeStatusBar
 ./install.sh      # macOS / Linux
 ./install.ps1     # Windows (PowerShell)
 ```
 
-**Manual:** download the script, then point `~/.claude/settings.json` at it.
+Then restart Claude Code or start a new session.
+
+<details>
+<summary>Live-edit install (recommended when hacking on it)</summary>
+
+Point `~/.claude/settings.json` straight at your working copy so edits take effect on the next
+statusline render — no reinstall step:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /Users/szolcek/Desktop/ClaudeStatusBar/statusline.js"
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Manual install (copy the script)</summary>
 
 ```bash
-curl -o ~/.claude/hooks/statusline.js https://raw.githubusercontent.com/MithunWijayasiri/ctxline-claude/main/statusline.js
+curl -o ~/.claude/hooks/statusline.js https://raw.githubusercontent.com/szolcek/ClaudeStatusBar/main/statusline.js
 chmod +x ~/.claude/hooks/statusline.js
 ```
 
@@ -79,15 +84,18 @@ chmod +x ~/.claude/hooks/statusline.js
 ## Update
 
 ```bash
-npx ctxline-claude@latest
+git pull                        # your fork
+git fetch upstream && git merge upstream/main    # upstream fixes
+./install.sh
 ```
 
-Re-runs the installer with the latest published version. Restart Claude Code or start a new session for the update to take effect.
+Restart Claude Code or start a new session for the update to take effect. (Not needed with the
+live-edit install above.)
 
 ## Uninstall
 
 ```bash
-npx ctxline-claude uninstall
+node bin/install.js uninstall
 ```
 
 Removes the `statusLine` entry from `settings.json` (backed up first, other settings untouched), deletes the hook script, and clears the usage cache. If `settings.json` points at a different statusline, it's left alone.

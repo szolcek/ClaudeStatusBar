@@ -1,9 +1,10 @@
 {
-  "name": "ctxline-claude",
+  "name": "claude-status-bar",
   "version": "1.2.2",
   "description": "A customizable statusline for Claude Code that tracks context usage and session limits",
+  "private": true,
   "bin": {
-    "ctxline-claude": "bin/install.js"
+    "claude-status-bar": "bin/install.js"
   },
   "scripts": {
     "test": "node --test",
@@ -26,14 +27,14 @@
     "vibe-coding",
     "context-window"
   ],
-  "author": "Mithun Wijayasiri",
+  "author": "szolcek",
   "license": "MIT",
-  "homepage": "https://ctxline.js.org",
+  "homepage": "https://github.com/szolcek/ClaudeStatusBar",
   "bugs": {
-    "url": "https://github.com/MithunWijayasiri/ctxline-claude/issues"
+    "url": "https://github.com/szolcek/ClaudeStatusBar/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/MithunWijayasiri/ctxline-claude.git"
+    "url": "https://github.com/szolcek/ClaudeStatusBar.git"
   }
 }

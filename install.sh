@@ -5,7 +5,7 @@ set -e
 
 HOOKS_DIR="$HOME/.claude/hooks"
 SETTINGS_FILE="$HOME/.claude/settings.json"
-REPO_URL="https://raw.githubusercontent.com/MithunWijayasiri/ctxline-claude/main"
+REPO_URL="https://raw.githubusercontent.com/szolcek/ClaudeStatusBar/main"
 
 # Colors
 GREEN='\033[0;32m'
@@ -122,5 +122,5 @@ echo "To uninstall:"
 echo "  - Remove ~/.claude/hooks/$SCRIPT_NAME"
 echo "  - Remove the 'statusLine' section from ~/.claude/settings.json"
 echo ""
-echo "For help, visit: https://github.com/MithunWijayasiri/ctxline-claude"
+echo "For help, visit: https://github.com/szolcek/ClaudeStatusBar"
 echo ""
