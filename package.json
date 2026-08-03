@@ -1,10 +1,12 @@
 {
-  "name": "claude-status-bar",
+  "name": "@szolcek/claude-status-bar",
   "version": "1.2.2",
-  "description": "A customizable statusline for Claude Code that tracks context usage and session limits",
-  "private": true,
+  "description": "A customizable statusline for Claude Code that tracks context usage and session limits — a fork of ctxline-claude",
   "bin": {
     "claude-status-bar": "bin/install.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "node --test",
@@ -18,14 +20,21 @@
     "statusline.js",
     "README.md",
     "LICENSE",
-    "preview.png"
+    "preview.png",
+    "preview.svg"
   ],
   "keywords": [
     "claude",
     "claude-code",
     "statusline",
+    "status-bar",
+    "claude-code-statusline",
+    "context-window",
     "vibe-coding",
-    "context-window"
+    "anthropic",
+    "cli",
+    "terminal",
+    "developer-tools"
   ],
   "author": "szolcek",
   "license": "MIT",
@@ -35,6 +44,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/szolcek/ClaudeStatusBar.git"
+    "url": "git+https://github.com/szolcek/ClaudeStatusBar.git"
   }
 }

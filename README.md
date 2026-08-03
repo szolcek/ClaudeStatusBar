@@ -12,11 +12,13 @@
 
 > **Personal fork** of [ctxline-claude](https://github.com/MithunWijayasiri/ctxline-claude) by
 > [Mithun Wijayasiri](https://github.com/MithunWijayasiri) — MIT licensed, original notice preserved
-> in [LICENSE](LICENSE). Customised for my own setup and **not published to npm**; install from
-> source. Upstream fixes get merged in periodically, and generic fixes go back upstream as PRs.
+> in [LICENSE](LICENSE). Customised for my own setup, and published separately as
+> `@szolcek/claude-status-bar` so it doesn't shadow the original — if you want the upstream
+> project, install [`ctxline-claude`](https://www.npmjs.com/package/ctxline-claude) instead.
+> Upstream fixes get merged in periodically, and generic fixes go back upstream as PRs.
 
 <p align="center">
-  <img src="preview.svg" alt="ClaudeStatusBar">
+  <img src="https://raw.githubusercontent.com/szolcek/ClaudeStatusBar/main/preview.png" alt="ClaudeStatusBar">
 </p>
 
 <p align="center">
@@ -37,13 +39,22 @@ See your **current directory**, **active model**, **context window usage**, and 
 ## Install
 
 ```bash
+npx @szolcek/claude-status-bar
+```
+
+Then restart Claude Code or start a new session. Works on macOS, Linux, and Windows; needs Node 18+.
+
+<details>
+<summary>Install from source</summary>
+
+```bash
 git clone https://github.com/szolcek/ClaudeStatusBar.git
 cd ClaudeStatusBar
 ./install.sh      # macOS / Linux
 ./install.ps1     # Windows (PowerShell)
 ```
 
-Then restart Claude Code or start a new session.
+</details>
 
 <details>
 <summary>Live-edit install (recommended when hacking on it)</summary>
@@ -55,7 +66,7 @@ statusline render — no reinstall step:
 {
   "statusLine": {
     "type": "command",
-    "command": "node /Users/szolcek/Desktop/ClaudeStatusBar/statusline.js"
+    "command": "node /path/to/ClaudeStatusBar/statusline.js"
   }
 }
 ```
@@ -84,10 +95,19 @@ chmod +x ~/.claude/hooks/statusline.js
 ## Update
 
 ```bash
+npx @szolcek/claude-status-bar@latest
+```
+
+<details>
+<summary>From source</summary>
+
+```bash
 git pull                        # your fork
 git fetch upstream && git merge upstream/main    # upstream fixes
 ./install.sh
 ```
+
+</details>
 
 Restart Claude Code or start a new session for the update to take effect. (Not needed with the
 live-edit install above.)
@@ -95,7 +115,7 @@ live-edit install above.)
 ## Uninstall
 
 ```bash
-node bin/install.js uninstall
+npx @szolcek/claude-status-bar uninstall
 ```
 
 Removes the `statusLine` entry from `settings.json` (backed up first, other settings untouched), deletes the hook script, and clears the usage cache. If `settings.json` points at a different statusline, it's left alone.
