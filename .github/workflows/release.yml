@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write   # required to create the tag + release
+  id-token: write   # required for npm trusted publishing (OIDC) — no token involved
 
 jobs:
   release:
@@ -23,8 +24,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          registry-url: 'https://registry.npmjs.org'   # writes the auth line npm publish needs
+          node-version: 24   # trusted publishing needs node >=22.14 / npm >=11.5.1
+          registry-url: 'https://registry.npmjs.org'   # points npm at the registry it authenticates against
 
       - name: Resolve tag
         id: ver
@@ -40,8 +41,9 @@ jobs:
         run: npm test
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Authenticates via OIDC: npm swaps the workflow's short-lived id-token for a
+        # publish credential, so there is no NPM_TOKEN secret to rotate or leak. Requires
+        # a trusted publisher configured on npmjs.com for this repo + workflow filename.
         run: npm publish
 
       - name: Render statusline preview
