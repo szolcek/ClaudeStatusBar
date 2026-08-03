@@ -1,6 +1,6 @@
 {
   "name": "@szolcek/claude-status-bar",
-  "version": "1.2.2",
+  "version": "2.0.0",
   "description": "A customizable statusline for Claude Code that tracks context usage and session limits — a fork of ctxline-claude",
   "bin": {
     "claude-status-bar": "bin/install.js"
