@@ -345,7 +345,8 @@ function getContextBar(remaining, { showBar = true } = {}) {
   else color = colors.blink + colors.red;
 
   // Compact label form: "C<used> <bar>" (e.g. "C45 ███░░░"), colored as a whole.
-  // showBar: false drops the glyphs and keeps the number ("C45") when space is tight.
+  // showBar: false drops the glyphs and keeps the number ("C45") when space is tight —
+  // the first detail compact mode sheds, since the number says everything the bar does.
   const barPart = showBar ? ` ${bar}` : '';
   return `${color}${CONFIG.labels.context}${used}${barPart}${colors.reset}`;
 }
@@ -406,8 +407,8 @@ function scopedLabel(entry) {
 // or null/absent; models is an array of { label, percentage, resetsAt } (possibly empty).
 // Returns { current, weekly, models } — the first two rendered strings or null, models a
 // (possibly empty) array of rendered strings.
-// showCountdown: false drops the "↺ 2d13h" suffix, the cheapest detail to lose when the
-// terminal is narrow — the percentage is what you glance at, the reset time rarely.
+// showCountdown: false drops the "↺ 2d13h" suffix — the percentage is what you glance at,
+// the reset time rarely, so it goes once dropping the context bar isn't enough.
 function buildUsageBars(fiveHour, weekly, models, { showCountdown = true } = {}) {
   const at = (e) => (showCountdown ? e.resetsAt : null);
 
@@ -795,14 +796,14 @@ function outputStatus(data, usage) {
     // least-valuable detail first, so a narrow terminal loses a reset countdown long
     // before it loses a percentage:
     //   0  everything
-    //   1  no "↺ <countdown>" on the usage bars
-    //   2  + no context bar glyphs (the "C38" number stays)
+    //   1  no context bar glyphs (the "C38" number stays)
+    //   2  + no "↺ <countdown>" on the usage bars
     //   3  + no effort suffix, model name truncated
     // '' means "nothing to show" (omitted); `scoped` is an array because an account can
     // report more than one model-scoped weekly limit.
     const buildLines = (level) => {
       const bars = buildUsageBars(usage?.fiveHour, usage?.weekly, usage?.models,
-        { showCountdown: level < 1 });
+        { showCountdown: level < 2 });
       const modelText = level < 3 ? model : truncateModel(model);
 
       const segments = {
@@ -812,7 +813,7 @@ function outputStatus(data, usage) {
         model: (effort && level < 3)
           ? `${modelText}${getEffortColor(effort)} · ${effort}${colors.reset}`
           : modelText,
-        context: getContextBar(remaining, { showBar: level < 2 }),
+        context: getContextBar(remaining, { showBar: level < 1 }),
         session: bars.current || '',
         weekly: bars.weekly || '',
         scoped: bars.models,

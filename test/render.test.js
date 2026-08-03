@@ -826,7 +826,7 @@ test('hideContextSize only strips a size, not any parenthetical', () => {
 });
 
 // `compact`: shed detail progressively as the terminal narrows, wrapping only once
-// there's nothing left to shed. Levels: 0 full, 1 no countdowns, 2 no context glyphs,
+// there's nothing left to shed. Levels: 0 full, 1 no context glyphs, 2 no countdowns,
 // 3 no effort + truncated model name.
 
 test('compact off (default): full detail at any width, wrap as the only response', () => {
@@ -845,24 +845,24 @@ test('compact: wide terminal keeps full detail', () => {
   assert.ok(!clean.includes('\n'), 'single line');
 });
 
-test('compact level 1: countdowns go first', () => {
+test('compact level 1: the context bar glyphs go first, the number stays', () => {
   const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), {
-    usage: true, config: { compact: true }, columns: 55
-  });
-  assert.ok(!clean.includes('↺'), 'countdowns dropped');
-  assert.match(clean, /H24\b/, 'percentages kept');
-  assert.match(clean, /W41\b/);
-  assert.match(clean, /█|░/, 'context glyphs still present at this width');
-  assert.ok(!clean.includes('\n'), 'still one line');
-});
-
-test('compact level 2: context bar glyphs go next, the number stays', () => {
-  const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), {
-    usage: true, config: { compact: true }, columns: 42
+    usage: true, config: { compact: true }, columns: 64
   });
   assert.ok(!/[█░]/.test(clean), 'bar glyphs dropped');
   assert.match(clean, /C60\b/, 'context percentage kept');
-  assert.match(clean, /H24\b/);
+  assert.match(clean, /↺/, 'countdowns still present at this width');
+  assert.ok(!clean.includes('\n'), 'still one line');
+});
+
+test('compact level 2: countdowns go next', () => {
+  const { clean } = run(fixtureWithRateLimits(40, { effort: 'high' }), {
+    usage: true, config: { compact: true }, columns: 50
+  });
+  assert.ok(!clean.includes('↺'), 'countdowns dropped');
+  assert.ok(!/[█░]/.test(clean), 'bar glyphs stay dropped');
+  assert.match(clean, /H24\b/, 'percentages kept');
+  assert.match(clean, /W41\b/);
   assert.ok(!clean.includes('\n'), 'still one line');
 });
 
@@ -970,12 +970,12 @@ test('widthMargin feeds the compact ladder too', () => {
   const noMargin = run(fixtureWithRateLimits(40, { effort: 'high' }), {
     usage: true, columns: 75, config: { compact: true }
   });
-  assert.match(noMargin.clean, /↺/, 'full detail fits at 75');
+  assert.match(noMargin.clean, /[█░]/, 'full detail fits at 75');
 
   const margin = run(fixtureWithRateLimits(40, { effort: 'high' }), {
     usage: true, columns: 75, config: { compact: true, widthMargin: 12 }
   });
-  assert.ok(!margin.clean.includes('↺'), 'held-back columns push it down a detail level');
+  assert.ok(!/[█░]/.test(margin.clean), 'held-back columns push it down a detail level');
 });
 
 test('widthMargin rejects non-integer and out-of-range values', () => {

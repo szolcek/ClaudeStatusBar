@@ -205,14 +205,15 @@ terminal narrows, and only wraps once there's nothing left to shed:
 | Level | Drops |
 |---|---|
 | 0 | nothing — full detail |
-| 1 | the `↺ 2d13h` reset countdowns |
-| 2 | the context bar glyphs (the `C38` number stays) |
+| 1 | the context bar glyphs (the `C38` number stays) |
+| 2 | the `↺ 2d13h` reset countdowns |
 | 3 | the effort suffix; model name truncated to 10 characters |
 
 ```
 120 cols  Opus 5 · high │ C38 ██░░░░ │ S49 ↺ 1h59m │ W63 ↺ 2d13h │ F88 ↺ 2d13h
- 44 cols  Opus 5 · high │ C38 ██░░░░ │ S49 │ W63 │ F88
- 36 cols  Opus 5 │ C38 │ S49 │ W63 │ F88
+ 64 cols  Opus 5 · high │ C38 │ S49 ↺ 1h59m │ W63 ↺ 2d13h │ F88 ↺ 2d13h
+ 44 cols  Opus 5 · high │ C38 │ S49 │ W63 │ F88
+ 34 cols  Opus 5 │ C38 │ S49 │ W63 │ F88
  26 cols  Opus 5 │ C38
           S49 │ W63 │ F88
 ```
